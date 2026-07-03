@@ -15,7 +15,7 @@ use windows_sys::Win32::Security::Cryptography::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::UI::HiDpi::*;
-use windows_sys::Win32::UI::Controls::{SetScrollInfo, DRAWITEMSTRUCT, ODS_SELECTED};
+use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetCapture, ReleaseCapture, SetActiveWindow, SetCapture, SetFocus,
 };
@@ -51,6 +51,16 @@ const IDC_OK: i32 = 3010;
 const IDC_CANCEL: i32 = 3011;
 
 const TIMER_POLL: usize = 1;
+const TIMER_ANIM: usize = 2;
+
+const WM_APP_ACTION: u32 = WM_APP + 1; // wparam: action, lparam: index
+const ACT_EDIT: usize = 1;
+const ACT_DUP: usize = 2;
+const ACT_DELETE: usize = 3;
+
+// spring physics for reorder animation
+const SPRING_STIFFNESS: f32 = 0.30;
+const SPRING_DAMPING: f32 = 0.70;
 
 // ---------- data ----------
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -75,7 +85,16 @@ struct App {
     font_plus: HFONT,
     scroll: i32,
     content_h: i32,
-    drag: Option<usize>,
+    ys: Vec<f32>,  // animated current y per button
+    vys: Vec<f32>, // velocity per button
+    drag: Option<Drag>,
+    anim: bool,
+}
+
+#[derive(Clone, Copy)]
+struct Drag {
+    idx: usize,
+    grab_dy: i32, // cursor offset within the dragged button
 }
 
 static mut OLD_BTN_PROC: isize = 0;
@@ -326,13 +345,22 @@ fn rebuild_buttons() {
     autosize_window();
 }
 
+fn target_y(i: usize) -> i32 {
+    MARGIN + (i as i32) * (BTN_H + GAP) - app().scroll
+}
+
 fn relayout() {
     let a = app();
     let mut rc: RECT = unsafe { zeroed() };
     unsafe { GetClientRect(a.hwnd, &mut rc) };
     let bw = (rc.right - MARGIN * 2).max(100);
+    let n = a.buttons.len();
+    a.ys.resize(n, 0.0);
+    a.vys.resize(n, 0.0);
     for (i, &b) in a.buttons.iter().enumerate() {
-        let y = MARGIN + (i as i32) * (BTN_H + GAP) - a.scroll;
+        let y = target_y(i);
+        a.ys[i] = y as f32;
+        a.vys[i] = 0.0;
         unsafe { MoveWindow(b, MARGIN, y, bw, BTN_H, 1) };
     }
     unsafe {
@@ -346,7 +374,71 @@ fn relayout() {
         )
     };
     a.content_h = MARGIN + (a.buttons.len() as i32) * (BTN_H + GAP) + MARGIN;
-    update_scrollbar();
+    clamp_scroll();
+}
+
+// ---------- reorder animation ----------
+fn start_anim() {
+    let a = app();
+    if !a.anim {
+        a.anim = true;
+        unsafe { SetTimer(a.hwnd, TIMER_ANIM, 15, None) };
+    }
+}
+
+fn anim_tick() {
+    let a = app();
+    let mut rc: RECT = unsafe { zeroed() };
+    unsafe { GetClientRect(a.hwnd, &mut rc) };
+    let bw = (rc.right - MARGIN * 2).max(100);
+    let mut settled = true;
+    unsafe {
+        let hdwp = BeginDeferWindowPos(a.buttons.len() as i32);
+        for i in 0..a.buttons.len() {
+            if a.drag.map_or(false, |d| d.idx == i) {
+                continue; // dragged button follows the mouse directly
+            }
+            let target = target_y(i) as f32;
+            let dy = target - a.ys[i];
+            a.vys[i] = (a.vys[i] + dy * SPRING_STIFFNESS) * SPRING_DAMPING;
+            a.ys[i] += a.vys[i];
+            if dy.abs() > 0.5 || a.vys[i].abs() > 0.5 {
+                settled = false;
+            } else {
+                a.ys[i] = target;
+                a.vys[i] = 0.0;
+            }
+            DeferWindowPos(
+                hdwp,
+                a.buttons[i],
+                0,
+                MARGIN,
+                a.ys[i].round() as i32,
+                bw,
+                BTN_H,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        EndDeferWindowPos(hdwp);
+        if settled && a.drag.is_none() {
+            KillTimer(a.hwnd, TIMER_ANIM);
+            a.anim = false;
+        }
+    }
+}
+
+fn move_item(from: usize, to: usize) {
+    let a = app();
+    let c = a.conns.remove(from);
+    a.conns.insert(to, c);
+    let p = a.procs.remove(from);
+    a.procs.insert(to, p);
+    let b = a.buttons.remove(from);
+    a.buttons.insert(to, b);
+    let y = a.ys.remove(from);
+    a.ys.insert(to, y);
+    let v = a.vys.remove(from);
+    a.vys.insert(to, v);
 }
 
 fn autosize_window() {
@@ -371,24 +463,19 @@ fn autosize_window() {
         bottom: client_h,
     };
     unsafe { AdjustWindowRectEx(&mut rc, style, 0, exstyle) };
-    // account for scrollbar width when content overflows
-    let sb = if desired_client_h > max_h {
-        unsafe { GetSystemMetrics(SM_CXVSCROLL) }
-    } else {
-        0
-    };
+    let _ = desired_client_h;
     unsafe {
         SetWindowPos(
             a.hwnd,
             0,
             0,
             0,
-            rc.right - rc.left + sb,
+            rc.right - rc.left,
             rc.bottom - rc.top,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
         )
     };
-    update_scrollbar();
+    clamp_scroll();
     relayout_plus_only();
 }
 
@@ -408,23 +495,13 @@ fn relayout_plus_only() {
     };
 }
 
-fn update_scrollbar() {
+fn clamp_scroll() {
     let a = app();
     let mut rc: RECT = unsafe { zeroed() };
     unsafe { GetClientRect(a.hwnd, &mut rc) };
     let view_h = rc.bottom - STRIP_H;
     let max = (a.content_h - view_h).max(0);
-    if a.scroll > max {
-        a.scroll = max;
-    }
-    let mut si: SCROLLINFO = unsafe { zeroed() };
-    si.cbSize = size_of::<SCROLLINFO>() as u32;
-    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-    si.nMin = 0;
-    si.nMax = if max > 0 { a.content_h - 1 } else { 0 };
-    si.nPage = if max > 0 { view_h as u32 } else { 0 };
-    si.nPos = a.scroll;
-    unsafe { SetScrollInfo(a.hwnd, SB_VERT as i32, &si, 1) };
+    a.scroll = a.scroll.clamp(0, max);
 }
 
 fn do_scroll(delta: i32) {
@@ -479,6 +556,26 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
+fn icon_rects(rc: &RECT) -> [RECT; 3] {
+    let mut out = [RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    }; 3];
+    let right_edge = rc.right - HANDLE_W - 2;
+    for (k, slot) in out.iter_mut().enumerate() {
+        let l = right_edge - (3 - k as i32) * 20;
+        *slot = RECT {
+            left: l,
+            top: rc.bottom - 21,
+            right: l + 18,
+            bottom: rc.bottom - 3,
+        };
+    }
+    out
+}
+
 unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
     let a = app();
     let hdc = dis.hDC;
@@ -486,7 +583,14 @@ unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
     let pressed = (dis.itemState & ODS_SELECTED) != 0;
 
     let is_plus = dis.CtlID == ID_PLUS as u32;
-    let idx = (dis.CtlID as i32 - ID_BTN_BASE) as usize;
+    let idx = if is_plus {
+        0
+    } else {
+        match a.buttons.iter().position(|&b| b == dis.hwndItem) {
+            Some(i) => i,
+            None => return,
+        }
+    };
     let active = !is_plus && idx < a.procs.len() && a.procs[idx] != 0;
 
     // colors packed as 0xRRGGBB for gradient helper
@@ -571,7 +675,7 @@ unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
     let mut bot_rc = RECT {
         left: rc.left + 10,
         top: rc.top + 32,
-        right: rc.right - HANDLE_W - 4,
+        right: rc.right - HANDLE_W - 66,
         bottom: rc.bottom - 6,
     };
     let sb = w(&sub);
@@ -600,74 +704,149 @@ unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
     }
     SelectObject(hdc, gold);
     DeleteObject(gpen);
+
+    // small action icons (edit / duplicate / delete) bottom-right
+    let icons = icon_rects(&rc);
+    let glyphs = ["\u{270F}", "\u{1F4CB}", "\u{1F5D1}"];
+    SetTextColor(
+        hdc,
+        if active {
+            rgb(0x3E, 0x7A, 0x3E)
+        } else {
+            rgb(0x7A, 0x86, 0x9C)
+        },
+    );
+    let oldf = SelectObject(hdc, a.font_host);
+    for (k, r) in icons.iter().enumerate() {
+        let mut rr = *r;
+        let g = w(glyphs[k]);
+        DrawTextW(
+            hdc,
+            g.as_ptr(),
+            -1,
+            &mut rr,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+        );
+    }
+    SelectObject(hdc, oldf);
 }
 
-// ---------- drag-to-reorder (button subclass) ----------
+// ---------- drag-to-reorder + action icons (button subclass) ----------
+unsafe fn cursor_and_rect(hwnd: HWND) -> (POINT, RECT) {
+    let mut pt: POINT = zeroed();
+    GetCursorPos(&mut pt);
+    ScreenToClient(hwnd, &mut pt);
+    let mut rc: RECT = zeroed();
+    GetClientRect(hwnd, &mut rc);
+    (pt, rc)
+}
+
+fn pt_in(pt: &POINT, r: &RECT) -> bool {
+    pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom
+}
+
 unsafe extern "system" fn btn_subclass_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let in_handle_zone = |hwnd: HWND| -> bool {
-        let mut pt: POINT = zeroed();
-        GetCursorPos(&mut pt);
-        ScreenToClient(hwnd, &mut pt);
-        let mut rc: RECT = zeroed();
-        GetClientRect(hwnd, &mut rc);
-        pt.x >= rc.right - HANDLE_W && pt.x <= rc.right && pt.y >= 0 && pt.y <= rc.bottom
-    };
     match msg {
         WM_SETCURSOR => {
-            if in_handle_zone(hwnd) {
+            let (pt, rc) = cursor_and_rect(hwnd);
+            if pt.x >= rc.right - HANDLE_W && pt.y >= 0 && pt.y <= rc.bottom {
                 SetCursor(LoadCursorW(0, IDC_SIZENS));
+                return 1;
+            }
+            if icon_rects(&rc).iter().any(|r| pt_in(&pt, r)) {
+                SetCursor(LoadCursorW(0, IDC_HAND));
                 return 1;
             }
         }
         WM_LBUTTONDOWN => {
-            let ctl_id = GetDlgCtrlID(hwnd);
-            let idx = (ctl_id - ID_BTN_BASE) as usize;
-            if in_handle_zone(hwnd) && idx < app().conns.len() {
-                app().drag = Some(idx);
-                SetCapture(hwnd);
-                return 0;
+            let a = app();
+            if let Some(idx) = a.buttons.iter().position(|&b| b == hwnd) {
+                let (pt, rc) = cursor_and_rect(hwnd);
+                // tiny action icons: edit / duplicate / delete
+                for (k, r) in icon_rects(&rc).iter().enumerate() {
+                    if pt_in(&pt, r) {
+                        PostMessageW(a.hwnd, WM_APP_ACTION, k + 1, idx as isize);
+                        return 0;
+                    }
+                }
+                // ≡ drag handle: start smooth drag
+                if pt.x >= rc.right - HANDLE_W {
+                    a.drag = Some(Drag {
+                        idx,
+                        grab_dy: pt.y,
+                    });
+                    a.vys[idx] = 0.0;
+                    SetCapture(hwnd);
+                    SetWindowPos(
+                        hwnd,
+                        0, // HWND_TOP: dragged button floats above siblings
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                    start_anim();
+                    return 0;
+                }
             }
         }
         WM_MOUSEMOVE => {
             let a = app();
-            if let Some(cur) = a.drag {
+            if let Some(d) = a.drag {
                 if GetCapture() == hwnd {
                     let mut pt: POINT = zeroed();
                     GetCursorPos(&mut pt);
                     ScreenToClient(a.hwnd, &mut pt);
+                    let mut crc: RECT = zeroed();
+                    GetClientRect(a.hwnd, &mut crc);
+                    let bw = (crc.right - MARGIN * 2).max(100);
                     let n = a.conns.len() as i32;
-                    let target = ((pt.y - MARGIN + a.scroll) / (BTN_H + GAP))
+                    let min_y = MARGIN - a.scroll - 6;
+                    let max_y = MARGIN + (n - 1) * (BTN_H + GAP) - a.scroll + 6;
+                    let y = (pt.y - d.grab_dy).clamp(min_y, max_y);
+                    MoveWindow(hwnd, MARGIN, y, bw, BTN_H, 1);
+                    a.ys[d.idx] = y as f32;
+                    // which slot does the dragged button's center land in?
+                    let center = y + BTN_H / 2;
+                    let slot = ((center - MARGIN + a.scroll) / (BTN_H + GAP))
                         .clamp(0, n - 1) as usize;
-                    if target != cur {
-                        let c = a.conns.remove(cur);
-                        a.conns.insert(target, c);
-                        let p = a.procs.remove(cur);
-                        a.procs.insert(target, p);
-                        a.drag = Some(target);
-                        for &b in &a.buttons {
-                            InvalidateRect(b, null(), 1);
-                        }
+                    if slot != d.idx {
+                        move_item(d.idx, slot);
+                        a.drag = Some(Drag {
+                            idx: slot,
+                            grab_dy: d.grab_dy,
+                        });
+                        start_anim(); // others spring out of the way
                     }
                     return 0;
                 }
             }
         }
         WM_LBUTTONUP => {
-            if app().drag.is_some() {
-                app().drag = None;
+            let a = app();
+            if a.drag.is_some() {
+                a.drag = None;
                 ReleaseCapture();
                 save_config();
+                start_anim(); // dragged button settles into its slot with a bounce
                 return 0;
             }
         }
         _ => {}
     }
-    CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(OLD_BTN_PROC), hwnd, msg, wparam, lparam)
+    CallWindowProcW(
+        std::mem::transmute::<isize, WNDPROC>(OLD_BTN_PROC),
+        hwnd,
+        msg,
+        wparam,
+        lparam,
+    )
 }
 
 // ---------- edit dialog ----------
@@ -895,27 +1074,40 @@ fn show_context_menu(idx: usize, x: i32, y: i32) {
         DestroyMenu(menu);
 
         match cmd {
-            IDM_CONNECT => {
-                launch_connection(idx);
-            }
-            IDM_EDIT => {
-                let initial = a.conns[idx].clone();
-                if let Some(updated) = show_edit_dialog(initial, "Edit Connection") {
-                    a.conns[idx] = updated;
-                    save_config();
-                    rebuild_buttons();
-                }
-            }
-            IDM_DUP => {
-                let mut cp = a.conns[idx].clone();
-                cp.name = format!("{} (copy)", cp.name);
-                a.conns.insert(idx + 1, cp);
-                a.procs.insert(idx + 1, 0);
+            IDM_CONNECT => launch_connection(idx),
+            IDM_EDIT => do_action(idx, ACT_EDIT),
+            IDM_DUP => do_action(idx, ACT_DUP),
+            IDM_DELETE => do_action(idx, ACT_DELETE),
+            _ => {}
+        }
+    }
+}
+
+fn do_action(idx: usize, action: usize) {
+    let a = app();
+    if idx >= a.conns.len() {
+        return;
+    }
+    match action {
+        ACT_EDIT => {
+            let initial = a.conns[idx].clone();
+            if let Some(updated) = show_edit_dialog(initial, "Edit Connection") {
+                a.conns[idx] = updated;
                 save_config();
                 rebuild_buttons();
             }
-            IDM_DELETE => {
-                let prompt = format!("Delete \"{}\"?", a.conns[idx].name);
+        }
+        ACT_DUP => {
+            let mut cp = a.conns[idx].clone();
+            cp.name = format!("{} (copy)", cp.name);
+            a.conns.insert(idx + 1, cp);
+            a.procs.insert(idx + 1, 0);
+            save_config();
+            rebuild_buttons();
+        }
+        ACT_DELETE => {
+            let prompt = format!("Delete \"{}\"?", a.conns[idx].name);
+            unsafe {
                 if MessageBoxW(
                     a.hwnd,
                     w(&prompt).as_ptr(),
@@ -932,8 +1124,8 @@ fn show_context_menu(idx: usize, x: i32, y: i32) {
                     rebuild_buttons();
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
 }
 
@@ -941,22 +1133,23 @@ fn show_context_menu(idx: usize, x: i32, y: i32) {
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_COMMAND => {
-            let id = loword(wparam) as i32;
             if hiword(wparam) as u32 == BN_CLICKED {
-                if id == ID_PLUS {
+                let src = lparam as HWND;
+                if src == app().plus_btn {
                     if let Some(c) = show_edit_dialog(Connection::default(), "New Connection") {
                         app().conns.push(c);
                         app().procs.push(0);
                         save_config();
                         rebuild_buttons();
                     }
-                } else if id >= ID_BTN_BASE {
-                    let idx = (id - ID_BTN_BASE) as usize;
-                    if idx < app().conns.len() {
-                        launch_connection(idx);
-                    }
+                } else if let Some(idx) = app().buttons.iter().position(|&b| b == src) {
+                    launch_connection(idx);
                 }
             }
+            0
+        }
+        WM_APP_ACTION => {
+            do_action(lparam as usize, wparam);
             0
         }
         WM_DRAWITEM => {
@@ -966,14 +1159,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_CONTEXTMENU => {
             let src = wparam as HWND;
-            let ctl_id = GetDlgCtrlID(src);
-            if ctl_id >= ID_BTN_BASE {
-                let idx = (ctl_id - ID_BTN_BASE) as usize;
-                if idx < app().conns.len() {
-                    let x = (lparam & 0xFFFF) as i16 as i32;
-                    let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                    show_context_menu(idx, x, y);
-                }
+            if let Some(idx) = app().buttons.iter().position(|&b| b == src) {
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                show_context_menu(idx, x, y);
                 return 0;
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -990,23 +1179,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         }
                     }
                 }
-            }
-            0
-        }
-        WM_VSCROLL => {
-            let a = app();
-            let code = loword(wparam) as i32;
-            match code {
-                SB_LINEUP => do_scroll(-(BTN_H + GAP)),
-                SB_LINEDOWN => do_scroll(BTN_H + GAP),
-                SB_PAGEUP => do_scroll(-(BTN_H + GAP) * 3),
-                SB_PAGEDOWN => do_scroll((BTN_H + GAP) * 3),
-                SB_THUMBTRACK | SB_THUMBPOSITION => {
-                    let pos = hiword(wparam) as i32;
-                    let delta = pos - a.scroll;
-                    do_scroll(delta);
-                }
-                _ => {}
+            } else if wparam == TIMER_ANIM {
+                anim_tick();
             }
             0
         }
@@ -1105,8 +1279,8 @@ fn main() {
         let font_host = mk_font(-13, FW_NORMAL as i32);
         let font_plus = mk_font(-20, FW_BOLD as i32);
 
-        // main window (always on top)
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VSCROLL;
+        // main window (always on top, no scrollbar - resizes with content)
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST,
             cls.as_ptr(),
@@ -1149,7 +1323,10 @@ fn main() {
             font_plus,
             scroll: 0,
             content_h: 0,
+            ys: Vec::new(),
+            vys: Vec::new(),
             drag: None,
+            anim: false,
         });
 
         // About entry in the system (title-bar) menu

@@ -22,10 +22,10 @@
 - **One-click launch** — big rectangle buttons, one per saved connection. Click and you're in.
 - **Auto-login** — saves host, username, and password, so `mstsc` connects without prompting.
 - **Live status** — buttons glow **light green** while their RDP session is running.
-- **Drag to reorder** — grab the `≡` handle on the right edge of any button and drag up/down.
-- **Right-click menu** — 🖥️ Connect, ✏️ Edit / Rename, 📋 Duplicate, 🗑️ Delete.
+- **Animated drag to reorder** — grab the `≡` handle on the right edge of any button and drag up/down; the other buttons spring out of the way with a smooth, slightly bouncy animation.
+- **Quick actions on every button** — tiny ✏️ edit, 📋 duplicate, and 🗑️ delete icons in the bottom-right corner, plus a full right-click menu (🖥️ Connect, ✏️ Edit / Rename, 📋 Duplicate, 🗑️ Delete).
 - **Always on top** — the launcher stays visible so you can open multiple sessions.
-- **Auto-expanding** — the window grows as you add connections with the **+** button, and scrolls when it hits screen height.
+- **Auto-expanding, scrollbar-free** — the window grows and shrinks with your list (mouse-wheel scrolls silently if it ever outgrows the screen).
 - **Native look** — pure Win32, silver/blue gradient buttons, Segoe UI, embedded Remote Desktop icon.
 
 ## 🚀 Getting started
@@ -90,7 +90,7 @@ RDP_Launcher/
 
 - **Zero frameworks** — raw Win32 via [`windows-sys`](https://crates.io/crates/windows-sys); owner-drawn buttons with GDI gradients.
 - **Tiny** — `opt-level = "z"`, LTO, stripped, `panic = "abort"` → a few hundred KB.
-- **Drag-reorder** — button windows are subclassed; the `≡` handle captures the mouse and live-swaps list entries.
+- **Drag-reorder** — button windows are subclassed; the `≡` handle captures the mouse while a 15 ms spring-physics timer (`stiffness 0.30, damping 0.70`) animates the other buttons into place with a subtle bounce.
 - **Session tracking** — spawned `mstsc` process handles are polled every second to drive the green "connected" state.
 
 ## 📄 License
