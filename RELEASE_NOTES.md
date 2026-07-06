@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🖥️ RDP Launcher v1.0.0
+# 🖥️ RDP Launcher v1.1.0
 
 **One-click RDP connection launcher for Windows**
 
@@ -10,9 +10,20 @@
 
 ---
 
-## 🚀 What's New
+## 🚀 What's New in v1.1.0
 
-### ✨ First stable release — everything you need, nothing you don't.
+### 🐛 Fixed: drag-reorder visual corruption
+Dragging buttons up/down no longer garbles the list. The window now uses
+`WS_CLIPCHILDREN` and moves buttons with `SWP_NOCOPYBITS`, so no more
+smeared/overlapping buttons after a reorder — no need to close and reopen.
+
+### 📌 New: lives in the system tray (near the clock)
+The launcher no longer takes a taskbar button on the left. Its icon sits in the
+**notification area** next to the speaker/clock:
+
+- **Left-click** the tray icon → show/hide the launcher
+- **Right-click** the tray icon → Open / About / Exit
+- **Minimize** or **X** hides to the tray (Exit via the tray menu)
 
 No installers. No services. No runtime dependencies. One `.exe`, double-click, done.
 

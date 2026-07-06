@@ -15,6 +15,9 @@ use windows_sys::Win32::Security::Cryptography::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::UI::HiDpi::*;
+use windows_sys::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+};
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetCapture, ReleaseCapture, SetActiveWindow, SetCapture, SetFocus,
@@ -42,6 +45,9 @@ const IDM_DELETE: usize = 2004;
 const IDM_DUP: usize = 2005;
 const IDM_CONNECT: usize = 2006;
 const IDM_ABOUT: usize = 0x0110; // system menu item (low 4 bits must be 0)
+const IDM_TRAY_OPEN: usize = 4001;
+const IDM_TRAY_ABOUT: usize = 4002;
+const IDM_TRAY_EXIT: usize = 4003;
 
 const IDC_NAME: i32 = 3001;
 const IDC_HOST: i32 = 3002;
@@ -54,6 +60,8 @@ const TIMER_POLL: usize = 1;
 const TIMER_ANIM: usize = 2;
 
 const WM_APP_ACTION: u32 = WM_APP + 1; // wparam: action, lparam: index
+const WM_APP_TRAY: u32 = WM_APP + 2; // tray icon callback
+const TRAY_ICON_ID: u32 = 1;
 const ACT_EDIT: usize = 1;
 const ACT_DUP: usize = 2;
 const ACT_DELETE: usize = 3;
@@ -416,7 +424,7 @@ fn anim_tick() {
                 a.ys[i].round() as i32,
                 bw,
                 BTN_H,
-                SWP_NOZORDER | SWP_NOACTIVATE,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
             );
         }
         EndDeferWindowPos(hdwp);
@@ -810,7 +818,15 @@ unsafe extern "system" fn btn_subclass_proc(
                     let min_y = MARGIN - a.scroll - 6;
                     let max_y = MARGIN + (n - 1) * (BTN_H + GAP) - a.scroll + 6;
                     let y = (pt.y - d.grab_dy).clamp(min_y, max_y);
-                    MoveWindow(hwnd, MARGIN, y, bw, BTN_H, 1);
+                    SetWindowPos(
+                        hwnd,
+                        0,
+                        MARGIN,
+                        y,
+                        bw,
+                        BTN_H,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+                    );
                     a.ys[d.idx] = y as f32;
                     // which slot does the dragged button's center land in?
                     let center = y + BTN_H / 2;
@@ -835,6 +851,11 @@ unsafe extern "system" fn btn_subclass_proc(
                 ReleaseCapture();
                 save_config();
                 start_anim(); // dragged button settles into its slot with a bounce
+                // repaint everything to clear any leftover drag artifacts
+                InvalidateRect(a.hwnd, null(), 1);
+                for &b in &a.buttons {
+                    InvalidateRect(b, null(), 1);
+                }
                 return 0;
             }
         }
@@ -1049,6 +1070,87 @@ fn show_edit_dialog(initial: Connection, title: &str) -> Option<Connection> {
     }
 }
 
+// ---------- system tray ----------
+unsafe fn tray_data(hwnd: HWND) -> NOTIFYICONDATAW {
+    let mut nid: NOTIFYICONDATAW = zeroed();
+    nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = TRAY_ICON_ID;
+    nid
+}
+
+unsafe fn tray_add(hwnd: HWND, hinst: HINSTANCE) {
+    let mut nid = tray_data(hwnd);
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_APP_TRAY;
+    nid.hIcon = LoadIconW(hinst, 1 as *const u16);
+    let tip = w(APP_TITLE);
+    nid.szTip[..tip.len().min(128)].copy_from_slice(&tip[..tip.len().min(128)]);
+    Shell_NotifyIconW(NIM_ADD, &nid);
+}
+
+unsafe fn tray_remove(hwnd: HWND) {
+    let nid = tray_data(hwnd);
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+unsafe fn toggle_main_window() {
+    let a = app();
+    if IsWindowVisible(a.hwnd) != 0 {
+        ShowWindow(a.hwnd, SW_HIDE);
+    } else {
+        ShowWindow(a.hwnd, SW_SHOW);
+        SetForegroundWindow(a.hwnd);
+    }
+}
+
+unsafe fn show_tray_menu() {
+    let a = app();
+    let menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_OPEN, w("Open RDP Launcher").as_ptr());
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_ABOUT, w("About...").as_ptr());
+    AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, w("Exit").as_ptr());
+    SetMenuDefaultItem(menu, IDM_TRAY_OPEN as u32, 0);
+
+    let mut pt: POINT = zeroed();
+    GetCursorPos(&mut pt);
+    SetForegroundWindow(a.hwnd);
+    let cmd = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+        pt.x,
+        pt.y,
+        0,
+        a.hwnd,
+        null(),
+    ) as usize;
+    PostMessageW(a.hwnd, WM_NULL, 0, 0);
+    DestroyMenu(menu);
+
+    match cmd {
+        IDM_TRAY_OPEN => {
+            ShowWindow(a.hwnd, SW_SHOW);
+            SetForegroundWindow(a.hwnd);
+        }
+        IDM_TRAY_ABOUT => show_about(a.hwnd),
+        IDM_TRAY_EXIT => {
+            DestroyWindow(a.hwnd);
+        }
+        _ => {}
+    }
+}
+
+unsafe fn show_about(hwnd: HWND) {
+    MessageBoxW(
+        hwnd,
+        w("RDP Launcher\nby c1t1zen\n\nVersion 1.1.0\n\nOne-click RDP connection launcher.\nLives in the system tray (near the clock) - click the tray icon to show/hide.\nConnections are stored in %APPDATA%\\RdpLauncher\nPasswords are encrypted with Windows DPAPI.")
+            .as_ptr(),
+        w("About RDP Launcher").as_ptr(),
+        MB_OK | MB_ICONINFORMATION,
+    );
+}
+
 // ---------- context menu ----------
 fn show_context_menu(idx: usize, x: i32, y: i32) {
     let a = app();
@@ -1152,6 +1254,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             do_action(lparam as usize, wparam);
             0
         }
+        WM_APP_TRAY => {
+            match (lparam & 0xFFFF) as u32 {
+                WM_LBUTTONUP => toggle_main_window(),
+                WM_RBUTTONUP => show_tray_menu(),
+                _ => {}
+            }
+            0
+        }
         WM_DRAWITEM => {
             let dis = &*(lparam as *const DRAWITEMSTRUCT);
             draw_button(dis);
@@ -1195,16 +1305,20 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_SYSCOMMAND => {
             if wparam == IDM_ABOUT {
-                MessageBoxW(
-                    hwnd,
-                    w("RDP Launcher\nby c1t1zen\n\nVersion 1.0.0\n\nOne-click RDP connection launcher.\nConnections are stored in %APPDATA%\\RdpLauncher\nPasswords are encrypted with Windows DPAPI.")
-                        .as_ptr(),
-                    w("About RDP Launcher").as_ptr(),
-                    MB_OK | MB_ICONINFORMATION,
-                );
+                show_about(hwnd);
+                return 0;
+            }
+            if wparam & 0xFFF0 == SC_MINIMIZE as usize {
+                // minimize hides to tray instead of the taskbar
+                ShowWindow(hwnd, SW_HIDE);
                 return 0;
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CLOSE => {
+            // closing hides to tray; Exit is available from the tray menu
+            ShowWindow(hwnd, SW_HIDE);
+            0
         }
         WM_ERASEBKGND => {
             let hdc = wparam as HDC;
@@ -1223,6 +1337,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             1
         }
         WM_DESTROY => {
+            tray_remove(hwnd);
             PostQuitMessage(0);
             0
         }
@@ -1280,9 +1395,13 @@ fn main() {
         let font_plus = mk_font(-20, FW_BOLD as i32);
 
         // main window (always on top, no scrollbar - resizes with content)
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+        // WS_CLIPCHILDREN prevents the background erase from painting over the
+        // buttons (which caused visual corruption during drag-reorder).
+        // WS_EX_TOOLWINDOW keeps the app off the taskbar; it lives in the
+        // system tray (near the clock) instead.
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             cls.as_ptr(),
             w(APP_TITLE).as_ptr(),
             style,
@@ -1340,6 +1459,7 @@ fn main() {
         );
 
         rebuild_buttons();
+        tray_add(hwnd, hinst);
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
         SetTimer(hwnd, TIMER_POLL, 1000, None);
