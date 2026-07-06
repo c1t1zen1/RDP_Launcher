@@ -93,6 +93,12 @@ RDP_Launcher/
 - **Drag-reorder** — button windows are subclassed; the `≡` handle captures the mouse while a 15 ms spring-physics timer (`stiffness 0.30, damping 0.70`) animates the other buttons into place with a subtle bounce.
 - **Session tracking** — spawned `mstsc` process handles are polled every second to drive the green "connected" state.
 
+## 📋 Changelog
+
+### v1.1.0
+- Fixed a glitch that caused connection buttons to shift order erratically.
+- Moved the app icon to the right side of the taskbar (system tray/notification area).
+
 ## 📄 License
 
 [MIT](LICENSE) © 2026 [c1t1zen](https://github.com/c1t1zen1)
