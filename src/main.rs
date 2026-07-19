@@ -270,9 +270,112 @@ unsafe fn spawn(cmdline: &str, hide: bool, wait: bool) -> HANDLE {
     pi.hProcess
 }
 
-fn launch_connection(idx: usize) {
+// ---------- RDP session focus helpers ----------
+struct FindRdpContext {
+    tokens: Vec<String>,
+    hwnd: HWND,
+}
+
+unsafe extern "system" fn find_rdp_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let ctx = &mut *(lparam as *mut FindRdpContext);
+    if IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    let mut class = [0u16; 256];
+    let n = GetClassNameW(hwnd, class.as_mut_ptr(), 256);
+    if n == 0 {
+        return 1;
+    }
+    let class_str = String::from_utf16_lossy(&class[..n as usize]);
+    if class_str.to_lowercase() != "tscshellcontainerclass" {
+        return 1;
+    }
+    let len = GetWindowTextLengthW(hwnd);
+    if len == 0 {
+        return 1;
+    }
+    let mut text = vec![0u16; (len + 1) as usize];
+    let m = GetWindowTextW(hwnd, text.as_mut_ptr(), len + 1);
+    if m == 0 {
+        return 1;
+    }
+    let title = String::from_utf16_lossy(&text[..m as usize]).to_lowercase();
+    for token in &ctx.tokens {
+        if !token.is_empty() && title.contains(token) {
+            ctx.hwnd = hwnd;
+            return 0;
+        }
+    }
+    1
+}
+
+unsafe fn find_rdp_window(c: &Connection) -> Option<HWND> {
+    let name = c.name.trim().to_lowercase();
+    let host = c.host.trim().to_lowercase();
+    let bare = c.host.split(':').next().unwrap_or(&c.host).trim().to_lowercase();
+    let mut tokens = Vec::new();
+    for t in [&name, &host, &bare] {
+        if !t.is_empty() && !tokens.contains(&t.to_string()) {
+            tokens.push(t.to_string());
+        }
+    }
+    let mut ctx = FindRdpContext { tokens, hwnd: 0 };
+    EnumWindows(Some(find_rdp_enum_proc), &mut ctx as *mut _ as LPARAM);
+    if ctx.hwnd != 0 {
+        Some(ctx.hwnd)
+    } else {
+        None
+    }
+}
+
+unsafe fn focus_existing_rdp(idx: usize) -> bool {
+    let c = app().conns[idx].clone();
+    if let Some(hwnd) = find_rdp_window(&c) {
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        } else if IsWindowVisible(hwnd) == 0 {
+            ShowWindow(hwnd, SW_SHOW);
+        }
+        SetForegroundWindow(hwnd);
+        BringWindowToTop(hwnd);
+        SetActiveWindow(hwnd);
+        true
+    } else {
+        false
+    }
+}
+
+unsafe fn is_process_active(idx: usize) -> bool {
     let a = app();
-    let c = a.conns[idx].clone();
+    if idx >= a.procs.len() || a.procs[idx] == 0 {
+        return false;
+    }
+    let h = a.procs[idx];
+    if WaitForSingleObject(h, 0) == WAIT_OBJECT_0 {
+        CloseHandle(h);
+        a.procs[idx] = 0;
+        if idx < a.buttons.len() {
+            InvalidateRect(a.buttons[idx], null(), 1);
+        }
+        false
+    } else {
+        true
+    }
+}
+
+fn launch_connection(idx: usize) {
+    unsafe {
+        // If this session is already open, bring the existing window to the foreground.
+        if focus_existing_rdp(idx) {
+            return;
+        }
+        // If the mstsc we launched is still starting, ignore repeated clicks.
+        if is_process_active(idx) {
+            return;
+        }
+    }
+
+    let c = app().conns[idx].clone();
     let pass = unprotect(&c.password_enc);
     unsafe {
         // store credentials for the terminal server so mstsc auto-logs-in
@@ -304,10 +407,7 @@ fn launch_connection(idx: usize) {
         }
         let _ = fs::write(&tmp, bytes);
 
-        // close previous handle if any
-        if a.procs[idx] != 0 {
-            CloseHandle(a.procs[idx]);
-        }
+        let a = app();
         let cmd = format!("mstsc.exe \"{}\"", tmp.display());
         a.procs[idx] = spawn(&cmd, false, false);
         if a.buttons.len() > idx {
