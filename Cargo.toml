@@ -1,6 +1,6 @@
 [package]
 name = "rdp-launcher"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 authors = ["c1t1zen"]
 description = "One-click RDP connection launcher for Windows"

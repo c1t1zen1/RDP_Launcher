@@ -18,9 +18,15 @@ use windows_sys::Win32::UI::HiDpi::*;
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
-use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
+use windows_sys::Win32::UI::Controls::{
+    InitCommonControlsEx, DRAWITEMSTRUCT, ICC_BAR_CLASSES, ICC_STANDARD_CLASSES,
+    INITCOMMONCONTROLSEX, ODS_SELECTED, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTM_DELTOOLW,
+    TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTS_NOPREFIX,
+    TTTOOLINFOW, WM_MOUSELEAVE,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetCapture, ReleaseCapture, SetActiveWindow, SetCapture, SetFocus,
+    TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -28,16 +34,39 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 const APP_TITLE: &str = "RDP Launcher";
 const CLASS_MAIN: &str = "RdpLauncherMain";
 const CLASS_DLG: &str = "RdpLauncherDlg";
+const CLASS_ABOUT: &str = "RdpLauncherAbout";
+const APP_VERSION: &str = "1.2.0";
 
 const BTN_W: i32 = 300;
 const BTN_H: i32 = 56;
 const MARGIN: i32 = 12;
 const GAP: i32 = 8;
+const HEADER_H: i32 = 32; // top strip holding minimize / pin / about
+const HDR_BTN: i32 = 24;
+const HDR_PAD: i32 = 6;
 const STRIP_H: i32 = 44; // bottom strip holding the + button
 const PLUS_SIZE: i32 = 30;
 
 const HANDLE_W: i32 = 34; // width of the ≡ drag-handle zone on each button
 
+const GLYPH_MINIMIZE: &str = "\u{E921}";
+const GLYPH_PIN: &str = "\u{E718}";
+const GLYPH_UNPIN: &str = "\u{E77A}";
+const GLYPH_INFO: &str = "\u{E946}";
+const GLYPH_ADD: &str = "\u{E710}";
+const GLYPH_EDIT: &str = "\u{E70F}";
+const GLYPH_COPY: &str = "\u{E8C8}";
+const GLYPH_DELETE: &str = "\u{E74D}";
+
+const TIP_BODY: usize = 1;
+const TIP_EDIT: usize = 2;
+const TIP_DUP: usize = 3;
+const TIP_DEL: usize = 4;
+const TIP_GRIP: usize = 5;
+
+const ID_MIN: i32 = 996;
+const ID_TOP: i32 = 997;
+const ID_INFO: i32 = 998;
 const ID_PLUS: i32 = 999;
 const ID_BTN_BASE: i32 = 1000;
 const IDM_EDIT: usize = 2001;
@@ -55,6 +84,8 @@ const IDC_USER: i32 = 3003;
 const IDC_PASS: i32 = 3004;
 const IDC_OK: i32 = 3010;
 const IDC_CANCEL: i32 = 3011;
+const IDC_ABOUT_TEXT: i32 = 3020;
+const IDC_ABOUT_OK: i32 = 3021;
 
 const TIMER_POLL: usize = 1;
 const TIMER_ANIM: usize = 2;
@@ -88,15 +119,41 @@ struct App {
     buttons: Vec<HWND>,
     procs: Vec<HANDLE>, // 0 = not running
     plus_btn: HWND,
+    min_btn: HWND,
+    top_btn: HWND,
+    info_btn: HWND,
+    tooltip: HWND,
+    tips: Vec<Vec<u16>>, // keeps tooltip strings alive
+    hot: HWND,           // hovered flat button (0 = none)
+    topmost: bool,
     font_name: HFONT,
     font_host: HFONT,
-    font_plus: HFONT,
+    font_icon: HFONT,
+    font_icon_sm: HFONT,
     scroll: i32,
     content_h: i32,
     ys: Vec<f32>,  // animated current y per button
     vys: Vec<f32>, // velocity per button
     drag: Option<Drag>,
     anim: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Settings {
+    #[serde(default = "default_true")]
+    always_on_top: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            always_on_top: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -214,11 +271,35 @@ fn unprotect(enc: &str) -> String {
 }
 
 // ---------- persistence ----------
-fn config_path() -> PathBuf {
+fn config_dir() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
     let dir = PathBuf::from(base).join("RdpLauncher");
     let _ = fs::create_dir_all(&dir);
-    dir.join("connections.json")
+    dir
+}
+
+fn config_path() -> PathBuf {
+    config_dir().join("connections.json")
+}
+
+fn settings_path() -> PathBuf {
+    config_dir().join("settings.json")
+}
+
+fn load_settings() -> Settings {
+    fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings() {
+    let s = Settings {
+        always_on_top: app().topmost,
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&s) {
+        let _ = fs::write(settings_path(), json);
+    }
 }
 
 fn load_config() -> Vec<Connection> {
@@ -420,7 +501,10 @@ fn launch_connection(idx: usize) {
 fn rebuild_buttons() {
     let a = app();
     for &b in &a.buttons {
-        unsafe { DestroyWindow(b) };
+        unsafe {
+            tip_remove_all(b);
+            DestroyWindow(b)
+        };
     }
     a.buttons.clear();
     a.procs.resize(a.conns.len(), 0);
@@ -451,10 +535,25 @@ fn rebuild_buttons() {
     }
     relayout();
     autosize_window();
+    for i in 0..a.buttons.len() {
+        unsafe { add_item_tips(a.buttons[i], i) };
+    }
 }
 
 fn target_y(i: usize) -> i32 {
-    MARGIN + (i as i32) * (BTN_H + GAP) - app().scroll
+    HEADER_H + MARGIN + (i as i32) * (BTN_H + GAP) - app().scroll
+}
+
+fn layout_header() {
+    let a = app();
+    let mut rc: RECT = unsafe { zeroed() };
+    unsafe { GetClientRect(a.hwnd, &mut rc) };
+    let y = (HEADER_H - HDR_BTN) / 2;
+    let mut x = rc.right - HDR_PAD - HDR_BTN;
+    for &h in &[a.min_btn, a.top_btn, a.info_btn] {
+        unsafe { MoveWindow(h, x, y, HDR_BTN, HDR_BTN, 1) };
+        x -= HDR_BTN + 2;
+    }
 }
 
 fn relayout() {
@@ -481,6 +580,10 @@ fn relayout() {
             1,
         )
     };
+    layout_header();
+    for &b in &a.buttons {
+        unsafe { update_item_tips(b) };
+    }
     a.content_h = MARGIN + (a.buttons.len() as i32) * (BTN_H + GAP) + MARGIN;
     clamp_scroll();
 }
@@ -552,7 +655,7 @@ fn move_item(from: usize, to: usize) {
 fn autosize_window() {
     let a = app();
     let n = a.conns.len().max(1) as i32;
-    let desired_client_h = MARGIN + n * (BTN_H + GAP) + STRIP_H;
+    let desired_client_h = HEADER_H + MARGIN + n * (BTN_H + GAP) + STRIP_H;
     let mut work: RECT = unsafe { zeroed() };
     unsafe {
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut RECT as *mut c_void, 0)
@@ -601,13 +704,14 @@ fn relayout_plus_only() {
             1,
         )
     };
+    layout_header();
 }
 
 fn clamp_scroll() {
     let a = app();
     let mut rc: RECT = unsafe { zeroed() };
     unsafe { GetClientRect(a.hwnd, &mut rc) };
-    let view_h = rc.bottom - STRIP_H;
+    let view_h = rc.bottom - STRIP_H - HEADER_H;
     let max = (a.content_h - view_h).max(0);
     a.scroll = a.scroll.clamp(0, max);
 }
@@ -616,13 +720,180 @@ fn do_scroll(delta: i32) {
     let a = app();
     let mut rc: RECT = unsafe { zeroed() };
     unsafe { GetClientRect(a.hwnd, &mut rc) };
-    let view_h = rc.bottom - STRIP_H;
+    let view_h = rc.bottom - STRIP_H - HEADER_H;
     let max = (a.content_h - view_h).max(0);
     let new = (a.scroll + delta).clamp(0, max);
     if new != a.scroll {
         a.scroll = new;
         relayout();
         unsafe { InvalidateRect(a.hwnd, null(), 1) };
+    }
+}
+
+// ---------- tooltips ----------
+fn tip_struct_size() -> u32 {
+    (size_of::<TTTOOLINFOW>() - size_of::<*mut c_void>()) as u32
+}
+
+unsafe fn tip_for_hwnd(target: HWND, text: &str) {
+    let a = app();
+    if a.tooltip == 0 || target == 0 {
+        return;
+    }
+    let mut buf = w(text);
+    let mut ti: TTTOOLINFOW = zeroed();
+    ti.cbSize = tip_struct_size();
+    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.hwnd = a.hwnd;
+    ti.uId = target as usize;
+    ti.lpszText = buf.as_mut_ptr();
+    SendMessageW(
+        a.tooltip,
+        TTM_ADDTOOLW,
+        0,
+        &ti as *const TTTOOLINFOW as isize,
+    );
+    a.tips.push(buf);
+}
+
+unsafe fn tip_for_rect(target: HWND, id: usize, rect: RECT, text: &str) {
+    let a = app();
+    if a.tooltip == 0 || target == 0 {
+        return;
+    }
+    let mut buf = w(text);
+    let mut ti: TTTOOLINFOW = zeroed();
+    ti.cbSize = tip_struct_size();
+    ti.uFlags = TTF_SUBCLASS;
+    ti.hwnd = target;
+    ti.uId = id;
+    ti.rect = rect;
+    ti.lpszText = buf.as_mut_ptr();
+    SendMessageW(
+        a.tooltip,
+        TTM_ADDTOOLW,
+        0,
+        &ti as *const TTTOOLINFOW as isize,
+    );
+    a.tips.push(buf);
+}
+
+unsafe fn tip_set_rect(target: HWND, id: usize, rect: RECT) {
+    let a = app();
+    if a.tooltip == 0 || target == 0 {
+        return;
+    }
+    let mut ti: TTTOOLINFOW = zeroed();
+    ti.cbSize = tip_struct_size();
+    ti.hwnd = target;
+    ti.uId = id;
+    ti.rect = rect;
+    SendMessageW(
+        a.tooltip,
+        TTM_NEWTOOLRECTW,
+        0,
+        &ti as *const TTTOOLINFOW as isize,
+    );
+}
+
+unsafe fn tip_set_text(target: HWND, text: &str) {
+    let a = app();
+    if a.tooltip == 0 || target == 0 {
+        return;
+    }
+    let mut buf = w(text);
+    let mut ti: TTTOOLINFOW = zeroed();
+    ti.cbSize = tip_struct_size();
+    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.hwnd = a.hwnd;
+    ti.uId = target as usize;
+    ti.lpszText = buf.as_mut_ptr();
+    SendMessageW(
+        a.tooltip,
+        TTM_UPDATETIPTEXTW,
+        0,
+        &ti as *const TTTOOLINFOW as isize,
+    );
+    a.tips.push(buf);
+}
+
+unsafe fn tip_remove_all(target: HWND) {
+    let a = app();
+    if a.tooltip == 0 || target == 0 {
+        return;
+    }
+    for id in [TIP_BODY, TIP_EDIT, TIP_DUP, TIP_DEL, TIP_GRIP] {
+        let mut ti: TTTOOLINFOW = zeroed();
+        ti.cbSize = tip_struct_size();
+        ti.hwnd = target;
+        ti.uId = id;
+        SendMessageW(
+            a.tooltip,
+            TTM_DELTOOLW,
+            0,
+            &ti as *const TTTOOLINFOW as isize,
+        );
+    }
+}
+
+fn item_tip_rects(rc: &RECT) -> [(usize, RECT); 5] {
+    let icons = icon_rects(rc);
+    [
+        (
+            TIP_BODY,
+            RECT {
+                left: 0,
+                top: 0,
+                right: (icons[0].left - 2).max(1),
+                bottom: rc.bottom,
+            },
+        ),
+        (TIP_EDIT, icons[0]),
+        (TIP_DUP, icons[1]),
+        (TIP_DEL, icons[2]),
+        (
+            TIP_GRIP,
+            RECT {
+                left: rc.right - HANDLE_W,
+                top: 0,
+                right: rc.right,
+                bottom: rc.bottom,
+            },
+        ),
+    ]
+}
+
+unsafe fn add_item_tips(btn: HWND, idx: usize) {
+    let a = app();
+    let c = &a.conns[idx];
+    let host = if c.host.is_empty() {
+        "this computer".to_string()
+    } else {
+        c.host.clone()
+    };
+    let body = format!(
+        "Click to connect to {}\nRight-click for more options",
+        host
+    );
+    let mut rc: RECT = zeroed();
+    GetClientRect(btn, &mut rc);
+    for (id, r) in item_tip_rects(&rc) {
+        let text = match id {
+            TIP_EDIT => "Edit this connection (name, host, username, password)",
+            TIP_DUP => "Duplicate this connection",
+            TIP_DEL => "Delete this connection",
+            TIP_GRIP => "Drag up or down to reorder the list",
+            _ => body.as_str(),
+        };
+        tip_for_rect(btn, id, r, text);
+    }
+}
+
+unsafe fn update_item_tips(btn: HWND) {
+    let mut rc: RECT = zeroed();
+    GetClientRect(btn, &mut rc);
+    for (id, r) in item_tip_rects(&rc) {
+        tip_set_rect(btn, id, r);
     }
 }
 
@@ -690,6 +961,12 @@ unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
     let rc = dis.rcItem;
     let pressed = (dis.itemState & ODS_SELECTED) != 0;
 
+    let ctl = dis.CtlID as i32;
+    if ctl == ID_MIN || ctl == ID_TOP || ctl == ID_INFO {
+        draw_header_button(hdc, &rc, ctl, pressed, dis.hwndItem == a.hot);
+        return;
+    }
+
     let is_plus = dis.CtlID == ID_PLUS as u32;
     let idx = if is_plus {
         0
@@ -710,6 +987,8 @@ unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
         }
     } else if pressed {
         (0xC9D3E4, 0xAEBBD2, 0x5A6C8C, rgb(0x10, 0x1A, 0x2B))
+    } else if dis.hwndItem == a.hot {
+        (0xFFFFFF, 0xE3E9F3, 0x6C7E9B, rgb(0x10, 0x1A, 0x2B))
     } else {
         (0xF4F7FB, 0xD5DDEA, 0x7A8AA5, rgb(0x10, 0x1A, 0x2B))
     };
@@ -728,17 +1007,7 @@ unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
 
     if is_plus {
         SetTextColor(hdc, rgb(0x2B, 0x3A, 0x55));
-        let old_font = SelectObject(hdc, a.font_plus);
-        let mut trc = rc;
-        let txt = w("+");
-        DrawTextW(
-            hdc,
-            txt.as_ptr(),
-            -1,
-            &mut trc,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
-        SelectObject(hdc, old_font);
+        draw_glyph(hdc, &rc, GLYPH_ADD, a.font_icon, -1);
         return;
     }
 
@@ -815,28 +1084,160 @@ unsafe fn draw_button(dis: &DRAWITEMSTRUCT) {
 
     // small action icons (edit / duplicate / delete) bottom-right
     let icons = icon_rects(&rc);
-    let glyphs = ["\u{270F}", "\u{1F4CB}", "\u{1F5D1}"];
+    let glyphs = [GLYPH_EDIT, GLYPH_COPY, GLYPH_DELETE];
     SetTextColor(
         hdc,
         if active {
             rgb(0x3E, 0x7A, 0x3E)
         } else {
-            rgb(0x7A, 0x86, 0x9C)
+            rgb(0x64, 0x71, 0x89)
         },
     );
-    let oldf = SelectObject(hdc, a.font_host);
     for (k, r) in icons.iter().enumerate() {
-        let mut rr = *r;
-        let g = w(glyphs[k]);
-        DrawTextW(
-            hdc,
-            g.as_ptr(),
-            -1,
-            &mut rr,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
-        );
+        draw_glyph(hdc, r, glyphs[k], a.font_icon_sm, -1);
     }
-    SelectObject(hdc, oldf);
+}
+
+unsafe fn draw_glyph(hdc: HDC, rc: &RECT, glyph: &str, font: HFONT, dy: i32) {
+    let old_font = SelectObject(hdc, font);
+    let mut trc = RECT {
+        left: rc.left,
+        top: rc.top + dy,
+        right: rc.right,
+        bottom: rc.bottom + dy,
+    };
+    let txt = w(glyph);
+    DrawTextW(
+        hdc,
+        txt.as_ptr(),
+        -1,
+        &mut trc,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP,
+    );
+    SelectObject(hdc, old_font);
+}
+
+unsafe fn draw_header_button(hdc: HDC, rc: &RECT, ctl: i32, pressed: bool, hot: bool) {
+    let a = app();
+    let bg = if pressed {
+        rgb(0xBF, 0xCB, 0xDE)
+    } else if hot {
+        rgb(0xDD, 0xE5, 0xF1)
+    } else {
+        rgb(0xE7, 0xEC, 0xF4)
+    };
+    let brush = CreateSolidBrush(bg);
+    FillRect(hdc, rc, brush);
+    DeleteObject(brush);
+
+    SetBkMode(hdc, TRANSPARENT as i32);
+    let (glyph, col) = match ctl {
+        ID_MIN => (GLYPH_MINIMIZE, rgb(0x2B, 0x3A, 0x55)),
+        ID_TOP => {
+            if a.topmost {
+                (GLYPH_PIN, rgb(0x0B, 0x63, 0xCE))
+            } else {
+                (GLYPH_UNPIN, rgb(0x5A, 0x66, 0x7A))
+            }
+        }
+        _ => (GLYPH_INFO, rgb(0x2B, 0x3A, 0x55)),
+    };
+    SetTextColor(hdc, col);
+    draw_glyph(hdc, rc, glyph, a.font_icon_sm, -1);
+}
+
+fn topmost_tip(on: bool) -> &'static str {
+    if on {
+        "Always on top: ON\nThe window stays above other windows.\nClick to let other windows cover it."
+    } else {
+        "Always on top: OFF\nOther windows can cover this one, like a normal app.\nClick to keep it above everything."
+    }
+}
+
+fn set_topmost(on: bool) {
+    let a = app();
+    a.topmost = on;
+    unsafe {
+        SetWindowPos(
+            a.hwnd,
+            if on { HWND_TOPMOST } else { HWND_NOTOPMOST },
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        InvalidateRect(a.top_btn, null(), 1);
+        tip_set_text(a.top_btn, topmost_tip(on));
+    }
+    save_settings();
+}
+
+// ---------- flat button hover tracking ----------
+static mut OLD_FLAT_PROC: isize = 0;
+
+unsafe extern "system" fn flat_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_MOUSEMOVE => {
+            let a = app();
+            if a.hot != hwnd {
+                let prev = a.hot;
+                a.hot = hwnd;
+                if prev != 0 {
+                    InvalidateRect(prev, null(), 1);
+                }
+                InvalidateRect(hwnd, null(), 1);
+            }
+            let mut tme: TRACKMOUSEEVENT = zeroed();
+            tme.cbSize = size_of::<TRACKMOUSEEVENT>() as u32;
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            tme.dwHoverTime = 0;
+            TrackMouseEvent(&mut tme);
+        }
+        WM_MOUSELEAVE => {
+            let a = app();
+            if a.hot == hwnd {
+                a.hot = 0;
+                InvalidateRect(hwnd, null(), 1);
+            }
+        }
+        _ => {}
+    }
+    CallWindowProcW(
+        std::mem::transmute::<isize, WNDPROC>(OLD_FLAT_PROC),
+        hwnd,
+        msg,
+        wparam,
+        lparam,
+    )
+}
+
+unsafe fn make_flat_button(parent: HWND, hinst: HINSTANCE, id: i32, size: i32) -> HWND {
+    let h = CreateWindowExW(
+        0,
+        w("BUTTON").as_ptr(),
+        null(),
+        WS_CHILD | WS_VISIBLE | (BS_OWNERDRAW as u32),
+        0,
+        0,
+        size,
+        size,
+        parent,
+        id as HMENU,
+        hinst,
+        null(),
+    );
+    let old = SetWindowLongPtrW(h, GWLP_WNDPROC, flat_subclass_proc as *const () as isize);
+    if OLD_FLAT_PROC == 0 {
+        OLD_FLAT_PROC = old;
+    }
+    h
 }
 
 // ---------- drag-to-reorder + action icons (button subclass) ----------
@@ -1241,14 +1642,243 @@ unsafe fn show_tray_menu() {
     }
 }
 
-unsafe fn show_about(hwnd: HWND) {
-    MessageBoxW(
-        hwnd,
-        w("RDP Launcher\nby c1t1zen\n\nVersion 1.1.0\n\nOne-click RDP connection launcher.\nLives in the system tray (near the clock) - click the tray icon to show/hide.\nConnections are stored in %APPDATA%\\RdpLauncher\nPasswords are encrypted with Windows DPAPI.")
-            .as_ptr(),
+// ---------- about window / user manual ----------
+static mut ABOUT_HWND: HWND = 0;
+
+fn manual_text() -> String {
+    let lines: Vec<String> = vec![
+        format!("RDP Launcher {}   -   by c1t1zen", APP_VERSION),
+        "A one-click launcher for your Remote Desktop connections.".into(),
+        "".into(),
+        "===============================================".into(),
+        "1. NEW TO REMOTE DESKTOP?".into(),
+        "===============================================".into(),
+        "Remote Desktop (RDP) lets you sign in to another Windows computer over the".into(),
+        "network and use its desktop as if you were sitting in front of it. Windows".into(),
+        "already ships the client program, mstsc.exe. RDP Launcher simply keeps your".into(),
+        "computers in a tidy list of buttons and starts mstsc.exe for you with the".into(),
+        "right settings and saved credentials.".into(),
+        "".into(),
+        "Before your first connection you need:".into(),
+        "  * The remote computer's name or IP address (for example PC-OFFICE or".into(),
+        "    192.168.1.50). If it uses a non-standard port, write host:port.".into(),
+        "  * Remote Desktop enabled on that computer:".into(),
+        "    Settings > System > Remote Desktop > On.".into(),
+        "  * A user account on that computer that is allowed to connect".into(),
+        "    (an administrator, or a member of Remote Desktop Users).".into(),
+        "  * Network access to it - same LAN, or a VPN, or a forwarded port.".into(),
+        "".into(),
+        "===============================================".into(),
+        "2. QUICK START".into(),
+        "===============================================".into(),
+        "  1) Click the + button in the bottom-right corner.".into(),
+        "  2) Fill in the form:".into(),
+        "       Name      - any label you like, e.g. Office PC".into(),
+        "       Host / IP  - the computer's name, IP, or host:port".into(),
+        "       Username  - user, DOMAIN\\user, or user@domain (optional)".into(),
+        "       Password  - optional; leave blank to be asked every time".into(),
+        "  3) Click Save. A button appears in the list.".into(),
+        "  4) Click that button to connect. The remote desktop opens full screen.".into(),
+        "     Press Ctrl+Alt+Break to leave full screen, or close the session window".into(),
+        "     to disconnect.".into(),
+        "".into(),
+        "A connection button turns green while its session is running. Clicking a".into(),
+        "green button brings the already-open session back to the front instead of".into(),
+        "starting a second one.".into(),
+        "".into(),
+        "===============================================".into(),
+        "3. THE BUTTONS AT THE TOP".into(),
+        "===============================================".into(),
+        "  Minimize (-)   Hides the window to the system tray next to the clock.".into(),
+        "                 Click the tray icon to bring it back.".into(),
+        "  Pin            Toggles 'always on top'. When it is ON (blue pin) the".into(),
+        "                 window floats above every other window. When it is OFF".into(),
+        "                 other programs can cover it, like a normal Windows app.".into(),
+        "                 The choice is remembered between runs.".into(),
+        "  i              Opens this About / manual window.".into(),
+        "".into(),
+        "Hover over anything in the app to see a short description.".into(),
+        "".into(),
+        "===============================================".into(),
+        "4. MANAGING CONNECTIONS".into(),
+        "===============================================".into(),
+        "Each connection button carries three small icons in its bottom-right corner:".into(),
+        "  Pencil   Edit the connection (name, host, username, password).".into(),
+        "  Copy     Duplicate it - handy for several accounts on one server.".into(),
+        "  Bin      Delete it (you will be asked to confirm).".into(),
+        "".into(),
+        "Right-click a button for the same actions plus Connect.".into(),
+        "".into(),
+        "To reorder the list, press and hold the three-line grip on the right edge of".into(),
+        "a button and drag it up or down. The other buttons glide out of the way and".into(),
+        "the new order is saved automatically.".into(),
+        "".into(),
+        "If the list is taller than the window, scroll it with the mouse wheel.".into(),
+        "".into(),
+        "===============================================".into(),
+        "5. TRAY ICON".into(),
+        "===============================================".into(),
+        "The app lives in the system tray instead of the taskbar.".into(),
+        "  Left-click the tray icon  - show or hide the window.".into(),
+        "  Right-click               - Open, About, or Exit.".into(),
+        "Closing the window with the X only hides it; use Exit in the tray menu to".into(),
+        "quit completely.".into(),
+        "".into(),
+        "===============================================".into(),
+        "6. WHERE YOUR DATA IS STORED".into(),
+        "===============================================".into(),
+        "  %APPDATA%\\RdpLauncher\\connections.json   your connection list".into(),
+        "  %APPDATA%\\RdpLauncher\\settings.json      always-on-top preference".into(),
+        "".into(),
+        "Passwords are never stored as plain text. They are encrypted with the".into(),
+        "Windows Data Protection API (DPAPI), which ties them to your Windows user".into(),
+        "account on this computer - nobody else can read them. When you connect, the".into(),
+        "credential is handed to Windows with cmdkey so mstsc can sign in for you.".into(),
+        "".into(),
+        "===============================================".into(),
+        "7. TROUBLESHOOTING".into(),
+        "===============================================".into(),
+        "  'The remote computer could not be found'".into(),
+        "      Check spelling of the host name, or use the IP address instead.".into(),
+        "  Connection times out".into(),
+        "      Remote Desktop may be off, a firewall may block TCP port 3389, or you".into(),
+        "      are not on the same network / VPN.".into(),
+        "  It keeps asking for a password".into(),
+        "      Edit the connection and re-enter username and password. Use the full".into(),
+        "      DOMAIN\\user form for domain accounts.".into(),
+        "  'Your credentials did not work'".into(),
+        "      The account may lack Remote Desktop permission on the remote machine.".into(),
+        "  Session opens but the screen is black for a moment".into(),
+        "      Normal - the remote desktop is still loading.".into(),
+        "".into(),
+        "===============================================".into(),
+        "8. GOOD PRACTICE".into(),
+        "===============================================".into(),
+        "Never expose port 3389 directly to the internet. Use a VPN, an RD Gateway,".into(),
+        "or SSH tunnelling, and always use strong passwords.".into(),
+        "".into(),
+        "-----------------------------------------------".into(),
+        "Copyright (c) 2026 c1t1zen. Released under the MIT licence.".into(),
+    ];
+    lines.join("\r\n")
+}
+
+unsafe fn layout_about(hwnd: HWND) {
+    let mut rc: RECT = zeroed();
+    GetClientRect(hwnd, &mut rc);
+    let edit = GetDlgItem(hwnd, IDC_ABOUT_TEXT);
+    let ok = GetDlgItem(hwnd, IDC_ABOUT_OK);
+    MoveWindow(edit, 12, 12, rc.right - 24, rc.bottom - 58, 1);
+    MoveWindow(ok, rc.right - 102, rc.bottom - 38, 90, 26, 1);
+}
+
+unsafe extern "system" fn about_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_CREATE => {
+            let hinst = app().hinst;
+            let edit = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                w("EDIT").as_ptr(),
+                w(&manual_text()).as_ptr(),
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WS_VSCROLL
+                    | WS_TABSTOP
+                    | ((ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32),
+                12,
+                12,
+                100,
+                100,
+                hwnd,
+                IDC_ABOUT_TEXT as HMENU,
+                hinst,
+                null(),
+            );
+            SendMessageW(edit, WM_SETFONT, app().font_host as usize, 1);
+            let ok = CreateWindowExW(
+                0,
+                w("BUTTON").as_ptr(),
+                w("Close").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_DEFPUSHBUTTON as u32),
+                0,
+                0,
+                90,
+                26,
+                hwnd,
+                IDC_ABOUT_OK as HMENU,
+                hinst,
+                null(),
+            );
+            SendMessageW(ok, WM_SETFONT, app().font_host as usize, 1);
+            layout_about(hwnd);
+            SetFocus(ok);
+            0
+        }
+        WM_SIZE => {
+            layout_about(hwnd);
+            0
+        }
+        WM_COMMAND => {
+            if loword(wparam) as i32 == IDC_ABOUT_OK {
+                DestroyWindow(hwnd);
+            }
+            0
+        }
+        WM_CLOSE => {
+            DestroyWindow(hwnd);
+            0
+        }
+        WM_DESTROY => {
+            ABOUT_HWND = 0;
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe fn show_about(_hwnd: HWND) {
+    let a = app();
+    if ABOUT_HWND != 0 {
+        ShowWindow(ABOUT_HWND, SW_SHOW);
+        SetForegroundWindow(ABOUT_HWND);
+        return;
+    }
+    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN;
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: 560,
+        bottom: 540,
+    };
+    AdjustWindowRectEx(&mut rc, style, 0, 0);
+
+    let mut prc: RECT = zeroed();
+    GetWindowRect(a.hwnd, &mut prc);
+    let x = prc.left + 30;
+    let y = (prc.top + 30).max(0);
+
+    let exstyle = if a.topmost { WS_EX_TOPMOST } else { 0 };
+    ABOUT_HWND = CreateWindowExW(
+        exstyle,
+        w(CLASS_ABOUT).as_ptr(),
         w("About RDP Launcher").as_ptr(),
-        MB_OK | MB_ICONINFORMATION,
+        style,
+        x,
+        y,
+        rc.right - rc.left,
+        rc.bottom - rc.top,
+        0,
+        0 as HMENU,
+        a.hinst,
+        null(),
     );
+    ShowWindow(ABOUT_HWND, SW_SHOW);
+    SetForegroundWindow(ABOUT_HWND);
 }
 
 // ---------- context menu ----------
@@ -1344,6 +1974,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         save_config();
                         rebuild_buttons();
                     }
+                } else if src == app().min_btn {
+                    ShowWindow(hwnd, SW_HIDE);
+                } else if src == app().top_btn {
+                    set_topmost(!app().topmost);
+                } else if src == app().info_btn {
+                    show_about(hwnd);
                 } else if let Some(idx) = app().buttons.iter().position(|&b| b == src) {
                     launch_connection(idx);
                 }
@@ -1427,13 +2063,51 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let brush = CreateSolidBrush(rgb(0xEF, 0xF2, 0xF7));
             FillRect(hdc, &rc, brush);
             DeleteObject(brush);
-            // separator line above the bottom strip
+            // top header strip
+            let hdr_rc = RECT {
+                left: 0,
+                top: 0,
+                right: rc.right,
+                bottom: HEADER_H,
+            };
+            let hbr = CreateSolidBrush(rgb(0xE7, 0xEC, 0xF4));
+            FillRect(hdc, &hdr_rc, hbr);
+            DeleteObject(hbr);
+            // separator lines below the header and above the bottom strip
             let pen = CreatePen(PS_SOLID, 1, rgb(0xC5, 0xCE, 0xDC));
             let old = SelectObject(hdc, pen);
+            MoveToEx(hdc, 0, HEADER_H - 1, null_mut());
+            LineTo(hdc, rc.right, HEADER_H - 1);
             MoveToEx(hdc, 0, rc.bottom - STRIP_H, null_mut());
             LineTo(hdc, rc.right, rc.bottom - STRIP_H);
             SelectObject(hdc, old);
             DeleteObject(pen);
+
+            SetBkMode(hdc, TRANSPARENT as i32);
+            let a = app();
+            let oldf = SelectObject(hdc, a.font_host);
+            SetTextColor(hdc, rgb(0x44, 0x50, 0x66));
+            let mut trc = RECT {
+                left: 10,
+                top: 0,
+                right: rc.right - HDR_BTN * 3 - HDR_PAD * 2,
+                bottom: HEADER_H - 1,
+            };
+            let n = a.conns.len();
+            let label = match n {
+                0 => "No connections yet - click + to add one".to_string(),
+                1 => "1 connection".to_string(),
+                _ => format!("{} connections", n),
+            };
+            let title = w(&label);
+            DrawTextW(
+                hdc,
+                title.as_ptr(),
+                -1,
+                &mut trc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+            );
+            SelectObject(hdc, oldf);
             1
         }
         WM_DESTROY => {
@@ -1450,6 +2124,12 @@ fn main() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         let hinst = GetModuleHandleW(null());
+
+        let icce = INITCOMMONCONTROLSEX {
+            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_STANDARD_CLASSES | ICC_BAR_CLASSES,
+        };
+        InitCommonControlsEx(&icce);
 
         // register classes
         let mut wc: WNDCLASSW = zeroed();
@@ -1471,8 +2151,18 @@ fn main() {
         wcd.lpszClassName = clsd.as_ptr();
         RegisterClassW(&wcd);
 
+        let mut wca: WNDCLASSW = zeroed();
+        wca.lpfnWndProc = Some(about_proc);
+        wca.hInstance = hinst;
+        wca.hCursor = LoadCursorW(0, IDC_ARROW);
+        wca.hbrBackground = (COLOR_BTNFACE + 1) as HBRUSH;
+        wca.hIcon = LoadIconW(hinst, 1 as *const u16);
+        let clsa = w(CLASS_ABOUT);
+        wca.lpszClassName = clsa.as_ptr();
+        RegisterClassW(&wca);
+
         // fonts
-        let mk_font = |h: i32, weight: i32| {
+        let mk_font = |h: i32, weight: i32, face: &str| {
             CreateFontW(
                 h,
                 0,
@@ -1487,12 +2177,15 @@ fn main() {
                 CLIP_DEFAULT_PRECIS as u32,
                 CLEARTYPE_QUALITY as u32,
                 (DEFAULT_PITCH | FF_DONTCARE) as u32,
-                w("Segoe UI").as_ptr(),
+                w(face).as_ptr(),
             )
         };
-        let font_name = mk_font(-16, FW_SEMIBOLD as i32);
-        let font_host = mk_font(-13, FW_NORMAL as i32);
-        let font_plus = mk_font(-20, FW_BOLD as i32);
+        let font_name = mk_font(-16, FW_SEMIBOLD as i32, "Segoe UI");
+        let font_host = mk_font(-13, FW_NORMAL as i32, "Segoe UI");
+        let font_icon = mk_font(-15, FW_NORMAL as i32, "Segoe MDL2 Assets");
+        let font_icon_sm = mk_font(-12, FW_NORMAL as i32, "Segoe MDL2 Assets");
+
+        let settings = load_settings();
 
         // main window (always on top, no scrollbar - resizes with content)
         // WS_CLIPCHILDREN prevents the background erase from painting over the
@@ -1500,8 +2193,13 @@ fn main() {
         // WS_EX_TOOLWINDOW keeps the app off the taskbar; it lives in the
         // system tray (near the clock) instead.
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+        let exstyle = if settings.always_on_top {
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW
+        } else {
+            WS_EX_TOOLWINDOW
+        };
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            exstyle,
             cls.as_ptr(),
             w(APP_TITLE).as_ptr(),
             style,
@@ -1515,17 +2213,22 @@ fn main() {
             null(),
         );
 
-        let plus_btn = CreateWindowExW(
-            0,
-            w("BUTTON").as_ptr(),
+        let plus_btn = make_flat_button(hwnd, hinst, ID_PLUS, PLUS_SIZE);
+        let min_btn = make_flat_button(hwnd, hinst, ID_MIN, HDR_BTN);
+        let top_btn = make_flat_button(hwnd, hinst, ID_TOP, HDR_BTN);
+        let info_btn = make_flat_button(hwnd, hinst, ID_INFO, HDR_BTN);
+
+        let tooltip = CreateWindowExW(
+            WS_EX_TOPMOST,
+            w("tooltips_class32").as_ptr(),
             null(),
-            WS_CHILD | WS_VISIBLE | (BS_OWNERDRAW as u32),
+            WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
             0,
             0,
-            PLUS_SIZE,
-            PLUS_SIZE,
+            0,
+            0,
             hwnd,
-            ID_PLUS as HMENU,
+            0 as HMENU,
             hinst,
             null(),
         );
@@ -1537,9 +2240,17 @@ fn main() {
             buttons: Vec::new(),
             procs: Vec::new(),
             plus_btn,
+            min_btn,
+            top_btn,
+            info_btn,
+            tooltip,
+            tips: Vec::new(),
+            hot: 0,
+            topmost: settings.always_on_top,
             font_name,
             font_host,
-            font_plus,
+            font_icon,
+            font_icon_sm,
             scroll: 0,
             content_h: 0,
             ys: Vec::new(),
@@ -1557,6 +2268,12 @@ fn main() {
             IDM_ABOUT,
             w("\u{2139}\u{FE0F}  About RDP Launcher...").as_ptr(),
         );
+
+        SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 320);
+        tip_for_hwnd(plus_btn, "Add a new RDP connection");
+        tip_for_hwnd(min_btn, "Minimize to the system tray\nClick the tray icon to bring it back");
+        tip_for_hwnd(top_btn, topmost_tip(settings.always_on_top));
+        tip_for_hwnd(info_btn, "About RDP Launcher and user manual");
 
         rebuild_buttons();
         tray_add(hwnd, hinst);
