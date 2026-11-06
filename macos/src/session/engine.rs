@@ -315,6 +315,10 @@ fn build_config(req: &SessionRequest, presented: &Arc<Mutex<Option<String>>>) ->
         .with_certificate_validation(CertificateValidation::Strict)
         .with_certificate_validation_callback(callback)
         .with_tcp_connect_attempt_timeout(TCP_CONNECT_TIMEOUT)
+        // No bulk compression: servers compress the Font Map PDU of the Deactivation-
+        // Reactivation sequence they use to resize, which IronRDP can't decode there
+        // (seen with xrdp: resizing the window dropped the session).
+        .with_compression(false)
         // Native macOS cursor from the server's pointer bitmaps (not drawn into the image).
         .with_server_pointer(true)
         .with_pointer_software_rendering(false)
@@ -385,4 +389,33 @@ fn display_control_layout(layout: &[RemoteMonitor]) -> anyhow::Result<DisplayCon
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(DisplayControlMonitorLayout::new(&entries)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> SessionRequest {
+        SessionRequest {
+            host: "192.168.0.112".into(),
+            port: 3389,
+            username: "ai".into(),
+            domain: None,
+            password: String::new(),
+            trusted_fingerprint: None,
+            layout: vec![RemoteMonitor { left: 0, top: 0, width: 1280, height: 800, primary: true }],
+            sound: true,
+            shared_folder: None,
+            clipboard: None,
+        }
+    }
+
+    /// xrdp (and Windows) resize via a Deactivation-Reactivation sequence; with bulk
+    /// compression negotiated the server compresses the reactivation's Font Map PDU, which
+    /// IronRDP's reactivation step can't decompress ("unexpected server message").
+    #[test]
+    fn bulk_compression_is_not_offered() {
+        let config = build_config(&request(), &Arc::new(Mutex::new(None))).unwrap();
+        assert_eq!(config.connector().compression_type, None);
+    }
 }

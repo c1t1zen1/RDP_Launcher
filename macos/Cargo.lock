@@ -1602,7 +1602,6 @@ dependencies = [
 [[package]]
 name = "ironrdp-connector"
 version = "0.12.0"
-source = "git+https://github.com/Devolutions/IronRDP?rev=da016ce860040c6cb37943cfc857d836735d252c#da016ce860040c6cb37943cfc857d836735d252c"
 dependencies = [
  "ironrdp-core",
  "ironrdp-error",

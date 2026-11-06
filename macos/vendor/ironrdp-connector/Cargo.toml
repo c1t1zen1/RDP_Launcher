@@ -1,0 +1,46 @@
+# Vendored from Devolutions/IronRDP crates/ironrdp-connector at rev da016ce8 with one
+# patch for xrdp (see PATCHES.md). Workspace-inherited fields are spelled out here.
+[package]
+name = "ironrdp-connector"
+version = "0.12.0"
+readme = "README.md"
+description = "State machines to drive an RDP connection sequence"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>", "Teleport <goteleport.com>"]
+publish = false
+
+[lib]
+doctest = false
+test = false
+
+[features]
+default = []
+__test = []
+qoi = ["ironrdp-pdu/qoi"]
+qoiz = ["ironrdp-pdu/qoiz"]
+remote-guard = ["dep:ironrdp-dvc", "dep:ironrdp-rdpear", "sspi/dns_resolver"]
+
+[dependencies]
+ironrdp-svc = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-core = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-error = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-pdu = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c", features = ["std"] }
+sspi = { version = "0.23.1", features = ["scard"] }
+ironrdp-dvc = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c", optional = true }
+ironrdp-rdpear = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c", optional = true }
+url = "2.5"
+rand = { version = "0.9", features = ["std"] }
+tracing = { version = "0.1", features = ["log"] }
+picky-asn1-der = "0.5"
+picky-asn1-x509 = "0.15"
+picky = "=7.0.0-rc.27"
+serde_json = "1"
+
+# Mirrors the IronRDP workspace lint that this crate's #[expect] attributes rely on.
+[lints.rust]
+single_use_lifetimes = "warn"
+unfulfilled_lint_expectations = "allow"
