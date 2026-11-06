@@ -7,12 +7,17 @@
 *by [c1t1zen](https://github.com/c1t1zen1)*
 
 ![macOS](https://img.shields.io/badge/platform-macOS%2013%2B%20·%20Apple%20Silicon-000000?logo=apple&logoColor=white)
+![Version](https://img.shields.io/badge/version-1.0.0%20·%20testing-orange)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-DEA584?logo=rust&logoColor=black)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
 
 ---
+
+> **⚠️ First release — testing phase.** v1.0.0 is the first version of RDP Launcher for Mac
+> and is still being tested. Expect some rough edges, and please
+> [open an issue](https://github.com/c1t1zen1/RDP_Launcher/issues) if something doesn't work.
 
 The macOS edition of [RDP Launcher](../README.md). Same launcher as on Windows — big
 buttons, green while connected, drag to reorder — but macOS has no built-in Remote

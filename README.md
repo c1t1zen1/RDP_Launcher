@@ -7,11 +7,14 @@
 *by [c1t1zen](https://github.com/c1t1zen1)*
 
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS%20v1.0.0-testing-orange?logo=apple&logoColor=white)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-DEA584?logo=rust&logoColor=black)
 ![Size](https://img.shields.io/badge/exe%20size-~400%20KB-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 <img src="assets/screenshot.png" width="340" alt="RDP Launcher screenshot">
+
+🍎 **New: RDP Launcher for Mac** — first release (v1.0.0), still in testing. [Details below ↓](#-macos-edition)
 
 </div>
 
@@ -82,6 +85,7 @@ RDP_Launcher/
 ├── tools/
 │   ├── make_icon.ps1    # Extracts the Windows RDP icon into app.ico
 │   └── screenshot.ps1   # Captures the app window for the README
+├── macos/               # macOS edition — separate Cargo project (see macos/README.md)
 ├── .cargo/config.toml   # Static CRT + self-contained linker settings
 └── Cargo.toml
 ```
@@ -95,14 +99,55 @@ RDP_Launcher/
 
 ## 🍎 macOS edition
 
-A separate macOS (Apple Silicon) version lives in [`macos/`](macos/README.md): the same
-launcher plus a built-in RDP client (full screen or windowed sessions, multi-monitor,
-clipboard, sound, shared folder), packaged as a drag-to-Applications `.app`.
-See [macos/README.md](macos/README.md) to build and install it. The Windows app above is unchanged.
+> **⚠️ First release — testing phase.** macOS **v1.0.0** is the first version of RDP Launcher
+> for Mac and is still being tested. Expect some rough edges, and please
+> [open an issue](https://github.com/c1t1zen1/RDP_Launcher/issues) if something doesn't work.
+> The Windows app is unaffected.
+
+The Mac version is the same launcher — big buttons, green while connected, drag to
+reorder — but macOS has no built-in Remote Desktop client, so it carries its own, built on
+the pure-Rust [IronRDP](https://github.com/Devolutions/IronRDP) library. Nothing else to install.
+
+- **One-click launch** — clicking a connected server brings its window back instead of opening a second one.
+- **Full screen or windowed, per connection** — full screen gets its own Space (three-finger swipe
+  between servers); windowed sessions resize the remote desktop as you drag the window edge.
+- **Multi-monitor** — one remote desktop across two or more selected displays.
+- **Clipboard, sound and a shared folder** — copy & paste text both ways, hear remote audio, and
+  share a Mac folder that shows up on the remote PC.
+- **Mac-friendly keyboard** — ⌘C/⌘V/⌘Z act as Ctrl+C/V/Z remotely; tap ⌘ alone for the Windows key.
+- **Works with Windows (NLA) and Linux/xrdp servers.**
+
+| | Windows | macOS |
+|---|---|---|
+| Requires | Windows 10/11 | macOS 13+ on Apple Silicon |
+| Package | single `.exe` | `.app` in a drag-to-install `.dmg` |
+| RDP client | Windows' own `mstsc` | built in (IronRDP) |
+| Passwords | Windows DPAPI | macOS Keychain |
+| Server identity | handled by `mstsc` | trust-on-first-use certificate fingerprint |
+| Connection list | `%APPDATA%\RdpLauncher\connections.json` | `~/Library/Application Support/RdpLauncher/connections.json` (same format) |
+
+**Build and install** (needs the Xcode Command Line Tools and [Rust](https://rustup.rs/)):
+
+```bash
+git clone https://github.com/c1t1zen1/RDP_Launcher.git
+cd RDP_Launcher/macos
+./scripts/build-app.sh        # → macos/dist/RDP-Launcher-1.0.0.dmg
+```
+
+Open the `.dmg`, drag **RDP Launcher** into **Applications**, and click **Allow** when macOS asks
+for Local Network access on your first connection. The app isn't notarized by Apple, so a
+downloaded copy needs right-click → **Open** the first time.
+
+Full Mac docs: [macos/README.md](macos/README.md) · manual test checklist: [macos/TESTING.md](macos/TESTING.md)
 
 ## 📋 Changelog
 
-### v1.1.0
+### macOS v1.0.0 — first release (testing phase)
+- First version of RDP Launcher for Mac, with a built-in RDP client.
+- Full screen / windowed sessions, multi-monitor, clipboard, sound, shared folder, Keychain passwords.
+- Fixed xrdp sessions dropping when the session window is resized.
+
+### v1.1.0 (Windows)
 - Fixed a glitch that caused connection buttons to shift order erratically.
 - Moved the app icon to the right side of the taskbar (system tray/notification area).
 
