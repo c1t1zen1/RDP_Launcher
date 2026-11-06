@@ -58,13 +58,20 @@ A Windows `connections.json` can be copied over and loads as-is (passwords must 
 
 ## 📦 Install
 
-1. Open `RDP-Launcher-1.0.0.dmg` and drag **RDP Launcher** into **Applications**.
-2. Start it from Launchpad or Spotlight.
-3. The first time you connect to a computer on your network, macOS asks to allow
+1. Download `RDP-Launcher-1.0.0.dmg` from the
+   [macOS v1.0.0 release](https://github.com/c1t1zen1/RDP_Launcher/releases/tag/macos-v1.0.0)
+   (or build it yourself, below).
+2. Open the `.dmg` and drag **RDP Launcher** into **Applications**.
+3. Start it from Launchpad or Spotlight.
+4. The first time you connect to a computer on your network, macOS asks to allow
    **Local Network** access — click **Allow**.
 
-A copy you build yourself opens normally. A copy downloaded from the internet is not
-notarized by Apple: right-click the app → **Open** the first time.
+A copy you build yourself opens normally. A downloaded copy isn't notarized by Apple, so
+the first launch is blocked with "Apple could not verify…":
+
+- **macOS 15 or later:** click **Done**, then open System Settings → **Privacy & Security**,
+  scroll down and click **Open Anyway** next to RDP Launcher.
+- **macOS 13–14:** right-click the app → **Open**, then **Open** again.
 
 ## 🛠️ Build from source
 

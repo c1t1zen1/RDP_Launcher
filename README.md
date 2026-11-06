@@ -126,17 +126,22 @@ the pure-Rust [IronRDP](https://github.com/Devolutions/IronRDP) library. Nothing
 | Server identity | handled by `mstsc` | trust-on-first-use certificate fingerprint |
 | Connection list | `%APPDATA%\RdpLauncher\connections.json` | `~/Library/Application Support/RdpLauncher/connections.json` (same format) |
 
-**Build and install** (needs the Xcode Command Line Tools and [Rust](https://rustup.rs/)):
+**Download:** `RDP-Launcher-1.0.0.dmg` from the
+[macOS v1.0.0 release](https://github.com/c1t1zen1/RDP_Launcher/releases/tag/macos-v1.0.0) (pre-release).
+Open it, drag **RDP Launcher** into **Applications**, and click **Allow** when macOS asks for
+Local Network access on your first connection.
+
+The app isn't notarized by Apple, so the first launch of a downloaded copy is blocked with
+"Apple could not verify…". On macOS 15+, go to System Settings → **Privacy & Security** and click
+**Open Anyway**; on macOS 13–14, right-click the app → **Open**.
+
+**Or build it yourself** (needs the Xcode Command Line Tools and [Rust](https://rustup.rs/)):
 
 ```bash
 git clone https://github.com/c1t1zen1/RDP_Launcher.git
 cd RDP_Launcher/macos
 ./scripts/build-app.sh        # → macos/dist/RDP-Launcher-1.0.0.dmg
 ```
-
-Open the `.dmg`, drag **RDP Launcher** into **Applications**, and click **Allow** when macOS asks
-for Local Network access on your first connection. The app isn't notarized by Apple, so a
-downloaded copy needs right-click → **Open** the first time.
 
 Full Mac docs: [macos/README.md](macos/README.md) · manual test checklist: [macos/TESTING.md](macos/TESTING.md)
 
