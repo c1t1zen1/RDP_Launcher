@@ -8,7 +8,9 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle};
 use objc2_foundation::NSString;
 
+use crate::displays::current_displays;
 use crate::keychain::Keychain;
+use crate::launcher::edit_dialog::{self, PasswordChange};
 use crate::launcher::{ItemStatus, LauncherCallbacks, LauncherController};
 use crate::model::{Connection, Settings, Store};
 
@@ -61,10 +63,10 @@ pub fn start(mtm: MainThreadMarker) {
 
     let callbacks = LauncherCallbacks {
         connect: Box::new(|i| tracing::info!(index = i, "connect requested")),
-        edit: Box::new(|i| tracing::info!(index = i, "edit requested")),
+        edit: Box::new(move |i| edit(mtm, i)),
         duplicate: Box::new(duplicate),
         delete: Box::new(move |i| delete(mtm, i)),
-        add: Box::new(|| tracing::info!("add requested")),
+        add: Box::new(move || add(mtm)),
         reordered: Box::new(reordered),
         pin_changed: Box::new(pin_changed),
         about: Box::new(|| tracing::info!("about requested")),
@@ -74,9 +76,63 @@ pub fn start(mtm: MainThreadMarker) {
     refresh_list();
     launcher.show();
     #[cfg(debug_assertions)]
-    if let Some(view) = launcher.window().contentView() {
-        crate::dev::snapshot_if_requested(&view, "launcher");
+    {
+        if let Some(view) = launcher.window().contentView() {
+            crate::dev::snapshot_if_requested(&view, "launcher");
+        }
+        crate::dev::open_if_requested();
     }
+}
+
+pub(crate) fn add(mtm: MainThreadMarker) {
+    let displays = current_displays(mtm);
+    let initial = Connection::new("", "");
+    let Some(result) = edit_dialog::show(mtm, "New Connection", &initial, false, &displays) else { return };
+    apply_password(mtm, &result.connection.id, &result.password);
+    with_state(|s| {
+        s.conns.push(result.connection);
+        save(s);
+    });
+    refresh_list();
+}
+
+pub(crate) fn edit(mtm: MainThreadMarker, i: usize) {
+    let Some(Some(conn)) = with_state(|s| s.conns.get(i).cloned()) else { return };
+    let has_password = Keychain::app().get(&conn.id).is_some();
+    let displays = current_displays(mtm);
+    let Some(result) = edit_dialog::show(mtm, "Edit Connection", &conn, has_password, &displays) else { return };
+    apply_password(mtm, &result.connection.id, &result.password);
+    with_state(|s| {
+        // Look up by id: the list may have changed while the dialog was open.
+        if let Some(slot) = s.conns.iter_mut().find(|c| c.id == result.connection.id) {
+            *slot = result.connection;
+            save(s);
+        }
+    });
+    refresh_list();
+}
+
+fn apply_password(mtm: MainThreadMarker, id: &str, change: &PasswordChange) {
+    let kc = Keychain::app();
+    match change {
+        PasswordChange::Keep => {}
+        PasswordChange::Clear => kc.delete(id),
+        PasswordChange::Set(p) => {
+            if let Err(e) = kc.set(id, p) {
+                tracing::error!(error = %e, "could not save password");
+                show_error(mtm, "The password could not be saved in the Keychain.", &e.to_string());
+            }
+        }
+    }
+}
+
+/// Modal error message.
+pub fn show_error(mtm: MainThreadMarker, message: &str, detail: &str) {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(message));
+    alert.setInformativeText(&NSString::from_str(detail));
+    alert.setAlertStyle(NSAlertStyle::Critical);
+    alert.runModal();
 }
 
 fn duplicate(i: usize) {

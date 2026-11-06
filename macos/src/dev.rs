@@ -116,6 +116,14 @@ pub fn snapshot_if_requested(view: &objc2_app_kit::NSView, name: &str) {
     use objc2_app_kit::NSBitmapImageFileType;
     use objc2_foundation::{NSDictionary, NSString};
     let Ok(prefix) = std::env::var("RDPL_SNAPSHOT") else { return };
+    // Windows paint their own background; give the snapshot one so light-on-dark text shows.
+    if view.layer().is_none_or(|l| l.backgroundColor().is_none()) {
+        view.setWantsLayer(true);
+        if let Some(layer) = view.layer() {
+            let bg = objc2_app_kit::NSColor::windowBackgroundColor();
+            layer.setBackgroundColor(Some(&bg.CGColor()));
+        }
+    }
     let rect = view.bounds();
     let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(rect) else { return };
     view.cacheDisplayInRect_toBitmapImageRep(rect, &rep);
@@ -125,4 +133,14 @@ pub fn snapshot_if_requested(view: &objc2_app_kit::NSView, name: &str) {
         data.writeToFile_atomically(&NSString::from_str(&path), true);
         tracing::info!(%path, "snapshot written");
     }
+}
+
+/// Debug aid: `RDPL_DEV_OPEN=add` or `edit` opens that dialog right after launch.
+pub fn open_if_requested() {
+    let Ok(what) = std::env::var("RDPL_DEV_OPEN") else { return };
+    on_main(move |mtm| match what.as_str() {
+        "add" => crate::controller::add(mtm),
+        "edit" => crate::controller::edit(mtm, 0),
+        _ => {}
+    });
 }

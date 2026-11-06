@@ -1,9 +1,11 @@
 //! The launcher window: header, connection buttons, + strip. Owns no data —
 //! the app passes in what to show and receives the user's actions.
 
+pub mod edit_dialog;
 pub mod geometry;
 pub mod list_view;
 pub mod palette;
+pub mod password_prompt;
 
 use std::rc::{Rc, Weak};
 
@@ -11,7 +13,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSFloatingWindowLevel, NSNormalWindowLevel, NSScreen, NSWindow,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSApplication, NSBackingStoreType, NSFloatingWindowLevel, NSNormalWindowLevel, NSScreen, NSWindow,
     NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
@@ -88,6 +90,8 @@ impl LauncherController {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(&NSString::from_str("RDP Launcher"));
+        // The launcher keeps the Windows app's light look even in Dark Mode.
+        window.setAppearance(NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }).as_deref());
         window.setAcceptsMouseMovedEvents(true);
         let list = ConnectionListView::new(mtm, rect);
         window.setContentView(Some(&list));

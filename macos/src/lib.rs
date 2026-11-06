@@ -5,6 +5,7 @@ pub mod controller;
 pub mod dev;
 pub mod keychain;
 pub mod launcher;
+pub mod displays;
 pub mod logging;
 pub mod model;
 pub mod monitors;
