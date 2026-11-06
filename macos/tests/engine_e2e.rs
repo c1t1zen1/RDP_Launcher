@@ -20,6 +20,17 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::LocalSet;
 
+use ironrdp_core::impl_as_any;
+use ironrdp_pdu::PduResult;
+use ironrdp_rdpdr::pdu::efs::{
+    ClientDriveLockControlResponse, ClientDriveNotifyChangeDirectoryResponse, ClientDriveQueryDirectoryResponse,
+    ClientDriveQueryInformationResponse, ClientDriveQuerySecurityResponse, ClientDriveQueryVolumeInformationResponse,
+    ClientDriveSetInformationResponse, ClientDriveSetSecurityResponse, DeviceAnnounceHeader, DeviceCloseResponse,
+    DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse, DeviceReadResponse, DeviceWriteResponse,
+};
+use ironrdp_rdpdr::server::RdpdrServerBackend;
+use ironrdp_server::{RdpdrServerFactory, ServerEventSender};
+
 const USER: &str = "user";
 const PASSWORD: &str = "password";
 const SIZE: u16 = 64;
@@ -63,10 +74,56 @@ impl RdpServerInputHandler for Input {
     fn mouse(&mut self, _: MouseEvent) {}
 }
 
+/// Server-side RDPDR that records announced devices (as Debug text).
+#[derive(Debug)]
+struct DriveRecorder(UnboundedSender<String>);
+
+impl_as_any!(DriveRecorder);
+
+impl RdpdrServerBackend for DriveRecorder {
+    fn on_device_announce(&mut self, devices: &[DeviceAnnounceHeader]) -> Vec<(u32, bool)> {
+        for d in devices {
+            let _ = self.0.send(format!("id={} {d:?}", d.device_id()));
+        }
+        devices.iter().map(|d| (d.device_id(), true)).collect()
+    }
+    fn on_device_remove(&mut self, _: &[u32]) {}
+    fn on_client_name(&mut self, computer_name: &str) {
+        let _ = self.0.send(format!("client-name={computer_name}"));
+    }
+    fn on_create_complete(&mut self, _: &DeviceCreateResponse) -> PduResult<()> { Ok(()) }
+    fn on_close_complete(&mut self, _: &DeviceCloseResponse) -> PduResult<()> { Ok(()) }
+    fn on_read_complete(&mut self, _: &DeviceReadResponse) -> PduResult<()> { Ok(()) }
+    fn on_write_complete(&mut self, _: &DeviceWriteResponse) -> PduResult<()> { Ok(()) }
+    fn on_flush_buffers_complete(&mut self, _: &DeviceFlushBuffersResponse) -> PduResult<()> { Ok(()) }
+    fn on_device_control_complete(&mut self, _: &DeviceControlResponse) -> PduResult<()> { Ok(()) }
+    fn on_query_information_complete(&mut self, _: &ClientDriveQueryInformationResponse) -> PduResult<()> { Ok(()) }
+    fn on_set_information_complete(&mut self, _: &ClientDriveSetInformationResponse) -> PduResult<()> { Ok(()) }
+    fn on_query_directory_complete(&mut self, _: &ClientDriveQueryDirectoryResponse) -> PduResult<()> { Ok(()) }
+    fn on_notify_change_directory_complete(&mut self, _: &ClientDriveNotifyChangeDirectoryResponse) -> PduResult<()> { Ok(()) }
+    fn on_query_volume_information_complete(&mut self, _: &ClientDriveQueryVolumeInformationResponse) -> PduResult<()> { Ok(()) }
+    fn on_lock_control_complete(&mut self, _: &ClientDriveLockControlResponse) -> PduResult<()> { Ok(()) }
+    fn on_query_security_complete(&mut self, _: &ClientDriveQuerySecurityResponse) -> PduResult<()> { Ok(()) }
+    fn on_set_security_complete(&mut self, _: &ClientDriveSetSecurityResponse) -> PduResult<()> { Ok(()) }
+}
+
+struct DriveRecorderFactory(UnboundedSender<String>);
+
+impl ServerEventSender for DriveRecorderFactory {
+    fn set_sender(&mut self, _: UnboundedSender<ServerEvent>) {}
+}
+
+impl RdpdrServerFactory for DriveRecorderFactory {
+    fn build_backend(&self) -> Box<dyn RdpdrServerBackend> {
+        Box::new(DriveRecorder(self.0.clone()))
+    }
+}
+
 struct TestServer {
     addr: SocketAddr,
     cert_der: Vec<u8>,
     keys: UnboundedReceiver<KeyboardEvent>,
+    drives: UnboundedReceiver<String>,
     display_tx: Option<UnboundedSender<DisplayUpdate>>,
 }
 
@@ -105,11 +162,13 @@ async fn spawn_server() -> TestServer {
     let acceptor = identity.make_acceptor().expect("TLS acceptor");
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let (keys_tx, keys) = mpsc::unbounded_channel();
+    let (drives_tx, drives) = mpsc::unbounded_channel();
     let mut server = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_hybrid(acceptor, identity.pub_key)
         .with_input_handler(Input(keys_tx))
         .with_display_handler(Display { rx: Arc::new(Mutex::new(display_rx)) })
+        .with_rdpdr_factory(Some(Box::new(DriveRecorderFactory(drives_tx))))
         .build();
     server.set_credentials(Some(Credentials { username: USER.into(), password: PASSWORD.into(), domain: None }));
     let events = server.event_sender().clone();
@@ -119,7 +178,7 @@ async fn spawn_server() -> TestServer {
     let (tx, rx) = oneshot::channel();
     events.send(ServerEvent::GetLocalAddr(tx)).unwrap();
     let addr = rx.await.unwrap().expect("server is listening");
-    TestServer { addr, cert_der, keys, display_tx: Some(display_tx) }
+    TestServer { addr, cert_der, keys, drives, display_tx: Some(display_tx) }
 }
 
 // ---------- client helpers ----------
@@ -319,6 +378,40 @@ async fn server_disconnect_reports_end() {
         }
         // exactly one terminal event: nothing else arrives afterwards
         assert!(tokio::time::timeout(Duration::from_millis(500), rx.recv()).await.map_or(true, |e| e.is_none()));
+    })
+    .await;
+}
+
+/// Drives are announced only after Windows' "user logged on" notification, which the
+/// test server never sends, so this checks the RDPDR channel is ours and named "Mac"
+/// (Windows labels the drive "<folder> on Mac").
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_folder_channel_identifies_as_mac() {
+    local(async {
+        let mut server = spawn_server().await;
+        let folder = tempfile::Builder::new().prefix("SharedTest").tempdir().unwrap();
+        let fp = certs::fingerprint(&server.cert_der);
+        let mut req = request(server.addr.port(), PASSWORD, Some(fp));
+        req.shared_folder = Some(folder.path().to_path_buf());
+        let (_handle, mut rx) = start(req);
+        wait_for(&mut rx, |e| matches!(e, SessionEvent::Connected)).await;
+        let name = tokio::time::timeout(Duration::from_secs(10), server.drives.recv())
+            .await
+            .expect("RDPDR client name within 10 s")
+            .expect("server alive");
+        assert_eq!(name, "client-name=Mac");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_shared_folder_means_no_drive_channel() {
+    local(async {
+        let mut server = spawn_server().await;
+        let fp = certs::fingerprint(&server.cert_der);
+        let (_handle, mut rx) = start(request(server.addr.port(), PASSWORD, Some(fp)));
+        wait_for(&mut rx, |e| matches!(e, SessionEvent::Connected)).await;
+        assert!(tokio::time::timeout(Duration::from_secs(2), server.drives.recv()).await.is_err());
     })
     .await;
 }

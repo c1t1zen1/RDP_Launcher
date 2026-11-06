@@ -142,7 +142,7 @@ impl SessionManager {
             trusted_fingerprint: conn.cert_fingerprint.clone(),
             layout: layout.clone(),
             sound: conn.sound,
-            shared_folder: None,
+            shared_folder: conn.shared_folder.clone(),
             clipboard: Some(Box::new(clipboard_factory)),
         };
         let id = conn.id.clone();

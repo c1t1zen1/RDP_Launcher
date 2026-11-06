@@ -259,6 +259,17 @@ fn map_event(
     }
 }
 
+/// The folder to share, if one is set and still exists.
+fn shared_folder(req: &SessionRequest) -> Option<PathBuf> {
+    let folder = req.shared_folder.as_ref()?;
+    if folder.is_dir() {
+        Some(folder.clone())
+    } else {
+        tracing::warn!(folder = %folder.display(), "shared folder is missing; connecting without it");
+        None
+    }
+}
+
 pub fn classify_failure(err: &ConnectorError) -> FailureKind {
     if matches!(err.kind(), ConnectorErrorKind::Credssp(_) | ConnectorErrorKind::AccessDenied) {
         return FailureKind::BadCredentials;
@@ -310,6 +321,7 @@ fn build_config(req: &SessionRequest, presented: &Arc<Mutex<Option<String>>>) ->
         .with_sound(req.sound)
         .with_audio_capture(false)
         .with_clipboard(if req.clipboard.is_some() { ClipboardType::Enable } else { ClipboardType::Disable })
+        // Our own RDPDR channel (see `drive::channel`) replaces the client's built-in one.
         .with_rdpdr(false)
         .with_printers(false)
         .with_ports(false);
@@ -318,6 +330,15 @@ fn build_config(req: &SessionRequest, presented: &Arc<Mutex<Option<String>>>) ->
     }
     if req.layout.len() > 1 {
         builder = builder.with_monitor_layout(client_monitor_data(&req.layout));
+    }
+    if let Some(folder) = shared_folder(req) {
+        builder = builder.with_static_channel(move |_| match crate::session::drive::channel(&folder) {
+            Ok(channel) => Some(channel),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not share folder");
+                None
+            }
+        });
     }
     builder.build()
 }
