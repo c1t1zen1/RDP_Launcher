@@ -7,12 +7,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask,
+    NSApplication, NSApplicationPresentationOptions, NSBackingStoreType, NSResponder, NSScreen, NSWindow,
+    NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer};
 
 use crate::model::DisplayMode;
-use crate::monitors::{DisplayInfo, Rect, RemoteMonitor};
+use crate::monitors::{monitor_region, DisplayInfo, Rect, RemoteMonitor};
 use crate::session::engine::{PointerUpdate, SessionHandle};
 use crate::session::framebuffer::Region;
 use crate::session::geometry::{remote_size, ViewMapping};
@@ -32,6 +33,8 @@ pub struct DelegateIvars {
     follows_window: Cell<bool>,
     resize_timer: RefCell<Option<Retained<NSTimer>>>,
     last_size: Cell<(u16, u16)>,
+    /// Multi-monitor: hide the menu bar and Dock while a session window is in front.
+    cover_displays: Cell<bool>,
 }
 
 define_class!(
@@ -63,6 +66,16 @@ define_class!(
         fn window_did_resign_key(&self, _notification: &NSNotification) {
             for view in self.ivars().views.borrow().iter() {
                 view.release_input();
+            }
+            if self.ivars().cover_displays.get() {
+                set_presentation(MainThreadMarker::from(self), false);
+            }
+        }
+
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            if self.ivars().cover_displays.get() {
+                set_presentation(MainThreadMarker::from(self), true);
             }
         }
 
@@ -113,9 +126,58 @@ impl SessionWindowDelegate {
             follows_window: Cell::new(true),
             resize_timer: RefCell::new(None),
             last_size: Cell::new((0, 0)),
+            cover_displays: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }
+}
+
+define_class!(
+    // SAFETY: NSWindow has no extra subclassing requirements; no Drop impl.
+    #[unsafe(super(NSWindow, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "RdpLauncherKeyableWindow"]
+    struct KeyableWindow;
+
+    impl KeyableWindow {
+        /// Borderless windows can't take keyboard focus unless they say so.
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main_window(&self) -> bool {
+            true
+        }
+    }
+);
+
+/// A borderless window covering `frame` (one display of a multi-monitor session).
+fn display_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
+    let this = KeyableWindow::alloc(mtm).set_ivars(());
+    let window: Retained<KeyableWindow> = unsafe {
+        msg_send![super(this), initWithContentRect: frame, styleMask: NSWindowStyleMask::Borderless, backing: NSBackingStoreType::Buffered, defer: false]
+    };
+    let window = Retained::into_super(window);
+    unsafe { window.setReleasedWhenClosed(false) };
+    window.setCollectionBehavior(NSWindowCollectionBehavior::Managed | NSWindowCollectionBehavior::FullScreenNone);
+    window.setAcceptsMouseMovedEvents(true);
+    window
+}
+
+/// Auto-hide the menu bar and Dock while a multi-monitor session is in front.
+fn set_presentation(mtm: MainThreadMarker, cover: bool) {
+    #[cfg(debug_assertions)]
+    if crate::dev::fake_displays().is_some() {
+        return; // fake test displays don't cover anything
+    }
+    let options = if cover {
+        NSApplicationPresentationOptions::AutoHideMenuBar | NSApplicationPresentationOptions::AutoHideDock
+    } else {
+        NSApplicationPresentationOptions::Default
+    };
+    NSApplication::sharedApplication(mtm).setPresentationOptions(options);
 }
 
 pub struct SessionWindows {
@@ -183,6 +245,9 @@ impl SessionWindows {
             height: WINDOWED_H as u32,
             primary: true,
         });
+        if mode == DisplayMode::Fullscreen && displays.len() > 1 && layout.len() == displays.len() {
+            return Self::open_spanning(mtm, title, handle, displays, layout);
+        }
         let (w, h) = (f64::from(first.width), f64::from(first.height));
         let window = titled_window(mtm, title, w, h);
         let mapping = ViewMapping { view_w: w, view_h: h, src: full_region(w, h) };
@@ -206,6 +271,38 @@ impl SessionWindows {
             window.toggleFullScreen(None);
         }
         Rc::new(SessionWindows { handle, windows: vec![(window, view)], delegate })
+    }
+
+    /// One borderless window per display, each showing its monitor's part of the desktop.
+    fn open_spanning(
+        mtm: MainThreadMarker,
+        title: &str,
+        handle: SessionHandle,
+        displays: &[DisplayInfo],
+        layout: &[RemoteMonitor],
+    ) -> Rc<SessionWindows> {
+        let delegate = SessionWindowDelegate::new(mtm, handle.clone());
+        delegate.ivars().follows_window.set(false);
+        delegate.ivars().cover_displays.set(true);
+        let mut windows = Vec::new();
+        for (i, display) in displays.iter().enumerate() {
+            let frame = ns_rect(display.frame);
+            let window = display_window(mtm, frame);
+            window.setTitle(&NSString::from_str(title));
+            let mapping = ViewMapping { view_w: frame.size.width, view_h: frame.size.height, src: monitor_region(layout, i) };
+            let view = RdpView::new(mtm, handle.clone(), mapping);
+            view.set_can_toggle_full_screen(false);
+            window.setContentView(Some(&view));
+            window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            delegate.ivars().views.borrow_mut().push(view.clone());
+            window.makeKeyAndOrderFront(None);
+            windows.push((window, view));
+        }
+        if let Some((window, view)) = windows.first() {
+            window.makeKeyAndOrderFront(None);
+            view.make_first_responder();
+        }
+        Rc::new(SessionWindows { handle, windows, delegate })
     }
 
     pub fn handle(&self) -> &SessionHandle {
@@ -244,6 +341,10 @@ impl SessionWindows {
             crate::dev::snapshot_frame(&img);
             for (_, view) in &self.windows {
                 view.present(&img, w, h);
+            }
+            #[cfg(debug_assertions)]
+            for (i, (_, view)) in self.windows.iter().enumerate() {
+                crate::dev::snapshot_layer(view, &format!("window{i}"));
             }
         }
     }

@@ -69,3 +69,42 @@ pub fn resize_if_requested(windows: &crate::session::window::SessionWindows) {
         window.setContentSize(objc2_foundation::NSSize::new(w, h));
     }
 }
+
+/// Debug aid: `RDPL_DEV_FAKE_DISPLAYS=side|stack` replaces the real displays with two
+/// small 400×300 "displays" on the main screen, to exercise multi-monitor sessions
+/// without covering the real monitors.
+pub fn fake_displays() -> Option<Vec<crate::monitors::DisplayInfo>> {
+    use crate::monitors::{DisplayInfo, Rect};
+    let mode = std::env::var("RDPL_DEV_FAKE_DISPLAYS").ok()?;
+    let second = if mode == "stack" { Rect { x: 200.0, y: 500.0, w: 400.0, h: 300.0 } } else { Rect { x: 600.0, y: 200.0, w: 400.0, h: 300.0 } };
+    let d = |key: &str, frame: Rect, is_main| DisplayInfo { key: key.into(), name: key.into(), frame, visible_frame: frame, is_main };
+    Some(vec![d("fake-a", Rect { x: 200.0, y: 200.0, w: 400.0, h: 300.0 }, true), d("fake-b", second, false)])
+}
+
+/// Debug aid: with `RDPL_SNAPSHOT`, render a view's layer (contents + contentsRect) to `<prefix>-<name>.png`.
+pub fn snapshot_layer(view: &objc2_app_kit::NSView, name: &str) {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+    use objc2_core_graphics::{CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGImageAlphaInfo};
+    use objc2_foundation::{NSDictionary, NSString};
+    let Ok(prefix) = std::env::var("RDPL_SNAPSHOT") else { return };
+    let Some(layer) = view.layer() else { return };
+    let size = view.bounds().size;
+    let (w, h) = (size.width as usize, size.height as usize);
+    let Some(space) = CGColorSpace::new_device_rgb() else { return };
+    let ctx = unsafe {
+        CGBitmapContextCreate(std::ptr::null_mut(), w, h, 8, w * 4, Some(&space), CGImageAlphaInfo::PremultipliedLast.0)
+    };
+    let Some(ctx) = ctx else { return };
+    if layer.isGeometryFlipped() {
+        // Draw a flipped (top-left origin) layer upright into the bottom-left bitmap context.
+        objc2_core_graphics::CGContext::translate_ctm(Some(&ctx), 0.0, h as f64);
+        objc2_core_graphics::CGContext::scale_ctm(Some(&ctx), 1.0, -1.0);
+    }
+    layer.renderInContext(&ctx);
+    let Some(image) = CGBitmapContextCreateImage(Some(&ctx)) else { return };
+    let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &image);
+    if let Some(data) = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) } {
+        data.writeToFile_atomically(&NSString::from_str(&format!("{prefix}-{name}.png")), true);
+    }
+}

@@ -77,8 +77,9 @@ define_class!(
             if let Some(old) = self.ivars().tracking.borrow_mut().take() {
                 self.removeTrackingArea(&old);
             }
+            // ActiveAlways: in multi-monitor sessions the pointer moves between windows.
             let options = NSTrackingAreaOptions::MouseMoved
-                | NSTrackingAreaOptions::ActiveInKeyWindow
+                | NSTrackingAreaOptions::ActiveAlways
                 | NSTrackingAreaOptions::InVisibleRect;
             let area = unsafe {
                 NSTrackingArea::initWithRect_options_owner_userInfo(
@@ -305,9 +306,10 @@ impl RdpView {
     pub fn present(&self, image: &CGImage, fb_w: u16, fb_h: u16) {
         let Some(layer) = self.layer() else { return };
         let (x, y, w, h) = contents_rect_top_left(&self.ivars().mapping.get(), fb_w, fb_h);
-        // CALayer's unit space on macOS has its origin at the bottom-left.
+        // This view is flipped, so its layer's contentsRect already counts from the image's top
+        // (verified with stacked test displays: y = 0 shows the top of the desktop).
         layer.setContentsRect(objc2_core_foundation::CGRect::new(
-            objc2_core_foundation::CGPoint::new(x, 1.0 - y - h),
+            objc2_core_foundation::CGPoint::new(x, y),
             objc2_core_foundation::CGSize::new(w, h),
         ));
         let obj: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };

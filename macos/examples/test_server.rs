@@ -210,6 +210,8 @@ async fn main() {
         .with_input_handler(Input)
         .with_display_handler(Display(shared))
         .with_cliprdr_factory(Some(Box::new(ClipFactory(None))))
+        // Like Windows, use the desktop size the client asks for.
+        .with_honor_client_desktop_size(Some(DesktopSize { width: 8192, height: 8192 }))
         .build();
     server.set_credentials(Some(Credentials { username: "user".into(), password: "password".into(), domain: None }));
     println!("test RDP server on 127.0.0.1:{port} — sign in as user / password");

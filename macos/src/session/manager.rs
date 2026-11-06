@@ -178,10 +178,20 @@ impl SessionManager {
     fn layout_for(&self, conn: &Connection) -> (Vec<DisplayInfo>, Vec<RemoteMonitor>) {
         match conn.display {
             DisplayMode::Fullscreen => {
-                let chosen = resolve_selection(&conn.monitors, &current_displays(self.mtm));
-                // Multi-monitor spanning arrives separately; until then use the first display.
-                let displays: Vec<DisplayInfo> = chosen.into_iter().take(1).collect();
+                #[cfg(debug_assertions)]
+                let fake = crate::dev::fake_displays();
+                #[cfg(not(debug_assertions))]
+                let fake: Option<Vec<DisplayInfo>> = None;
+                let (available, saved) = match fake {
+                    Some(f) => {
+                        let keys = f.iter().map(|d| d.key.clone()).collect::<Vec<_>>();
+                        (f, keys)
+                    }
+                    None => (current_displays(self.mtm), conn.monitors.clone()),
+                };
+                let displays = resolve_selection(&saved, &available);
                 let layout = remote_layout(&displays);
+                tracing::info!(displays = displays.len(), ?layout, "full-screen layout");
                 (displays, layout)
             }
             DisplayMode::Windowed => {
