@@ -53,8 +53,12 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 smallvec = "1"
 
 [dev-dependencies]
-ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c", features = ["helper"] }
+# The test server encodes with IronRDP's QOI codecs; let the test client decode them.
+# (Test builds only — release builds never advertise QOI.)
+ironrdp-client = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c", features = ["qoi", "qoiz"] }
 tempfile = "3"
+async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 
 [profile.release]
