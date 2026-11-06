@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>RDP Launcher</string>
+	<key>CFBundleDisplayName</key>
+	<string>RDP Launcher</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.c1t1zen.rdplauncher</string>
+	<key>CFBundleExecutable</key>
+	<string>rdp-launcher</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>RDP Launcher connects to Remote Desktop servers on your local network.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (c) 2026 c1t1zen. MIT License.</string>
+</dict>
+</plist>

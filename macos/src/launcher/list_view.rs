@@ -36,6 +36,8 @@ pub enum Action {
     About,
 }
 
+type ActionHandler = Rc<dyn Fn(Action)>;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Target {
     Item(usize, Zone),
@@ -68,7 +70,7 @@ pub struct ListIvars {
     timer: RefCell<Option<Retained<NSTimer>>>,
     tooltips: RefCell<Vec<Retained<NSString>>>,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
-    on_action: RefCell<Option<Rc<dyn Fn(Action)>>>,
+    on_action: RefCell<Option<ActionHandler>>,
 }
 
 define_class!(
@@ -349,7 +351,7 @@ impl ConnectionListView {
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
-    pub fn set_on_action(&self, f: Rc<dyn Fn(Action)>) {
+    pub fn set_on_action(&self, f: ActionHandler) {
         *self.ivars().on_action.borrow_mut() = Some(f);
     }
 

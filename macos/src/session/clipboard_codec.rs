@@ -16,8 +16,10 @@ pub fn encode_unicode_text(s: &str) -> Vec<u8> {
 /// CF_UNICODETEXT bytes → Mac text (stops at the first NUL; CRLF → LF; invalid UTF-16 replaced).
 pub fn decode_unicode_text(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|u| *u != 0)
         .collect();
     String::from_utf16_lossy(&units).replace("\r\n", "\n")

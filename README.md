@@ -93,6 +93,13 @@ RDP_Launcher/
 - **Drag-reorder** — button windows are subclassed; the `≡` handle captures the mouse while a 15 ms spring-physics timer (`stiffness 0.30, damping 0.70`) animates the other buttons into place with a subtle bounce.
 - **Session tracking** — spawned `mstsc` process handles are polled every second to drive the green "connected" state.
 
+## 🍎 macOS edition
+
+A separate macOS (Apple Silicon) version lives in [`macos/`](macos/README.md): the same
+launcher plus a built-in RDP client (full screen or windowed sessions, multi-monitor,
+clipboard, sound, shared folder), packaged as a drag-to-Applications `.app`.
+See [macos/README.md](macos/README.md) to build and install it. The Windows app above is unchanged.
+
 ## 📋 Changelog
 
 ### v1.1.0

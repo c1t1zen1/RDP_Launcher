@@ -39,12 +39,15 @@ impl Session {
     }
 }
 
+type StatusCallback = Box<dyn Fn(&str, ItemStatus)>;
+type TrustCallback = Box<dyn Fn(&str, String)>;
+
 pub struct SessionCallbacks {
-    pub on_status: Box<dyn Fn(&str, ItemStatus)>,
+    pub on_status: StatusCallback,
     /// The user chose "Edit Connection" after a failure.
     pub on_edit_request: Box<dyn Fn(&str)>,
     /// The user trusted a certificate fingerprint for this connection; persist it.
-    pub on_trust: Box<dyn Fn(&str, String)>,
+    pub on_trust: TrustCallback,
 }
 
 pub struct SessionManager {

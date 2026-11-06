@@ -83,7 +83,7 @@ pub fn connection_failed(mtm: MainThreadMarker, conn_name: &str, kind: FailureKi
         }
         FailureKind::Other => "",
     };
-    alert.setInformativeText(&NSString::from_str(&format!("{hint}\n\n{message}").trim().to_owned()));
+    alert.setInformativeText(&NSString::from_str(format!("{hint}\n\n{message}").trim()));
     alert.setAlertStyle(NSAlertStyle::Warning);
     for b in ["Reconnect", "Edit Connection", "Close"] {
         alert.addButtonWithTitle(&NSString::from_str(b));

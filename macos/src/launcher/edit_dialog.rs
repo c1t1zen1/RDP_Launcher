@@ -314,7 +314,7 @@ pub fn show(
     );
     unsafe { panel.setReleasedWhenClosed(false) };
     panel.setTitle(&NSString::from_str(title));
-    let Some(content) = panel.contentView() else { return None };
+    let content = panel.contentView()?;
     let mut col = Column::new();
 
     col.label(mtm, "Name");
