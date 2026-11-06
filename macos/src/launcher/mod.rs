@@ -1,11 +1,14 @@
 //! The launcher window: header, connection buttons, + strip. Owns no data —
 //! the app passes in what to show and receives the user's actions.
 
+pub mod about;
 pub mod edit_dialog;
 pub mod geometry;
 pub mod list_view;
+pub mod manual;
 pub mod palette;
 pub mod password_prompt;
+pub mod status_item;
 
 use std::rc::{Rc, Weak};
 

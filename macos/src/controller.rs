@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle};
 use objc2_foundation::NSString;
@@ -11,7 +12,8 @@ use objc2_foundation::NSString;
 use crate::displays::current_displays;
 use crate::keychain::Keychain;
 use crate::launcher::edit_dialog::{self, PasswordChange};
-use crate::launcher::{ItemStatus, LauncherCallbacks, LauncherController};
+use crate::launcher::status_item::{self, StatusTarget};
+use crate::launcher::{about, ItemStatus, LauncherCallbacks, LauncherController};
 use crate::model::{Connection, Settings, Store};
 
 pub struct AppState {
@@ -19,6 +21,7 @@ pub struct AppState {
     pub conns: Vec<Connection>,
     pub settings: Settings,
     pub launcher: Option<Rc<LauncherController>>,
+    pub status_item: Option<Retained<StatusTarget>>,
 }
 
 thread_local! {
@@ -32,6 +35,23 @@ pub fn with_state<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
 
 fn launcher() -> Option<Rc<LauncherController>> {
     with_state(|s| s.launcher.clone()).flatten()
+}
+
+pub fn show_launcher() {
+    if let Some(l) = launcher() {
+        l.show();
+    }
+}
+
+/// Number of open RDP sessions (sessions arrive with the session manager).
+pub fn session_count() -> usize {
+    0
+}
+
+/// Ask before quitting while sessions are open.
+pub fn confirm_quit(mtm: MainThreadMarker) -> bool {
+    let n = session_count();
+    n == 0 || confirm(mtm, &format!("Disconnect {n} session(s) and quit?"), "Quit")
 }
 
 fn save(state: &AppState) {
@@ -59,7 +79,7 @@ pub fn start(mtm: MainThreadMarker) {
     let conns = store.load_connections();
     let settings = store.load_settings();
     let pinned = settings.always_on_top;
-    STATE.with(|s| *s.borrow_mut() = Some(AppState { store, conns, settings, launcher: None }));
+    STATE.with(|s| *s.borrow_mut() = Some(AppState { store, conns, settings, launcher: None, status_item: None }));
 
     let callbacks = LauncherCallbacks {
         connect: Box::new(|i| tracing::info!(index = i, "connect requested")),
@@ -69,15 +89,28 @@ pub fn start(mtm: MainThreadMarker) {
         add: Box::new(move || add(mtm)),
         reordered: Box::new(reordered),
         pin_changed: Box::new(pin_changed),
-        about: Box::new(|| tracing::info!("about requested")),
+        about: Box::new(move || about::show(mtm)),
     };
-    let launcher = LauncherController::new(mtm, callbacks, pinned);
-    with_state(|s| s.launcher = Some(launcher.clone()));
+    let ctl = LauncherController::new(mtm, callbacks, pinned);
+    let status = status_item::install(
+        mtm,
+        Box::new(|| {
+            if let Some(l) = launcher() {
+                l.toggle();
+            }
+        }),
+        Box::new(move || about::show(mtm)),
+        Box::new(move || objc2_app_kit::NSApplication::sharedApplication(mtm).terminate(None)),
+    );
+    with_state(|s| {
+        s.launcher = Some(ctl.clone());
+        s.status_item = Some(status);
+    });
     refresh_list();
-    launcher.show();
+    ctl.show();
     #[cfg(debug_assertions)]
     {
-        if let Some(view) = launcher.window().contentView() {
+        if let Some(view) = ctl.window().contentView() {
             crate::dev::snapshot_if_requested(&view, "launcher");
         }
         crate::dev::open_if_requested();

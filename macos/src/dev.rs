@@ -141,6 +141,7 @@ pub fn open_if_requested() {
     on_main(move |mtm| match what.as_str() {
         "add" => crate::controller::add(mtm),
         "edit" => crate::controller::edit(mtm, 0),
+        "about" => crate::launcher::about::show(mtm),
         _ => {}
     });
 }

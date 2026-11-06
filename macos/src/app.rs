@@ -5,7 +5,10 @@ use std::sync::OnceLock;
 use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSMenu, NSMenuItem};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply, NSEventModifierFlags,
+    NSMenu, NSMenuItem,
+};
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSString};
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -51,6 +54,29 @@ define_class!(
         fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
             false
         }
+
+        /// Clicking the Dock icon brings the launcher back.
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn should_handle_reopen(&self, _app: &NSApplication, _has_visible: bool) -> bool {
+            crate::controller::show_launcher();
+            true
+        }
+
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
+            if crate::controller::confirm_quit(MainThreadMarker::from(self)) {
+                NSApplicationTerminateReply::TerminateNow
+            } else {
+                NSApplicationTerminateReply::TerminateCancel
+            }
+        }
+    }
+
+    impl AppDelegate {
+        #[unsafe(method(showAbout:))]
+        fn show_about(&self, _sender: Option<&objc2::runtime::AnyObject>) {
+            crate::launcher::about::show(MainThreadMarker::from(self));
+        }
     }
 );
 
@@ -82,13 +108,15 @@ fn submenu(mtm: MainThreadMarker, title: &str, items: &[Retained<NSMenuItem>]) -
     (top, menu)
 }
 
-fn build_main_menu(mtm: MainThreadMarker, app: &NSApplication) {
+fn build_main_menu(mtm: MainThreadMarker, app: &NSApplication, delegate: &AppDelegate) {
     let main = NSMenu::new(mtm);
+    let about = item(mtm, "About RDP Launcher", Some(sel!(showAbout:)), "");
+    unsafe { about.setTarget(Some(delegate)) };
     let (app_item, _) = submenu(
         mtm,
         "RDP Launcher",
         &[
-            item(mtm, "About RDP Launcher", Some(sel!(orderFrontStandardAboutPanel:)), ""),
+            about,
             NSMenuItem::separatorItem(mtm),
             item(mtm, "Hide RDP Launcher", Some(sel!(hide:)), "h"),
             NSMenuItem::separatorItem(mtm),
@@ -96,6 +124,22 @@ fn build_main_menu(mtm: MainThreadMarker, app: &NSApplication) {
         ],
     );
     main.addItem(&app_item);
+    let redo = item(mtm, "Redo", Some(sel!(redo:)), "z");
+    redo.setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Shift);
+    let (edit_item, _) = submenu(
+        mtm,
+        "Edit",
+        &[
+            item(mtm, "Undo", Some(sel!(undo:)), "z"),
+            redo,
+            NSMenuItem::separatorItem(mtm),
+            item(mtm, "Cut", Some(sel!(cut:)), "x"),
+            item(mtm, "Copy", Some(sel!(copy:)), "c"),
+            item(mtm, "Paste", Some(sel!(paste:)), "v"),
+            item(mtm, "Select All", Some(sel!(selectAll:)), "a"),
+        ],
+    );
+    main.addItem(&edit_item);
     let (window_item, window_menu) = submenu(
         mtm,
         "Window",
@@ -115,8 +159,8 @@ pub fn run() {
     let mtm = MainThreadMarker::new().expect("run() must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    build_main_menu(mtm, &app);
     let delegate = AppDelegate::new(mtm);
+    build_main_menu(mtm, &app, &delegate);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
