@@ -64,7 +64,7 @@ Windows edition's "raw platform API, no framework" philosophy.
 |---|---|
 | AppKit / Foundation / CoreAnimation | `objc2`, `objc2-foundation`, `objc2-app-kit`, `objc2-quartz-core`, `objc2-core-graphics` (exact set settled in the plan) |
 | Main-thread dispatch | `dispatch2` |
-| RDP | `ironrdp` 0.17 family: connector, session, graphics, input, cliprdr, rdpsnd, rdpdr + `ironrdp-rdpdr-native` (macOS/Linux `nix` backend), displaycontrol, dvc, svc; `ironrdp-tokio`; optionally `ironrdp-client` 0.1 engine if it allows injecting our own clipboard backend |
+| RDP | `ironrdp-client` engine plus companion crates (input, pdu, displaycontrol, tls, cliprdr, rdpdr, `ironrdp-rdpdr-native` macOS `nix` backend), all from git `Devolutions/IronRDP` at pinned rev `da016ce8`. The published `ironrdp` 0.17 / `ironrdp-client` 0.1 lack the hooks we need: custom clipboard/drive backends, a certificate callback before credentials are sent, multi-monitor layouts and region updates. Verified to build on this Mac with features `rustls, sound, clipboard, rdpdr, openh264`. |
 | Async runtime | `tokio` |
 | TLS | `rustls` (via IronRDP feature) |
 | Audio output | `cpal` (CoreAudio) — via `ironrdp-rdpsnd-native` if it works on macOS, else our own `rdpsnd` client handler on `cpal` |
