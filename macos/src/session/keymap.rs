@@ -243,6 +243,23 @@ pub fn modifier_is_down(keycode: u16, raw_flags: u64) -> bool {
     raw_flags & mask != 0
 }
 
+/// ⌘-shortcuts that stay with the Mac instead of going to the remote (as Ctrl+key):
+/// ⌘Q quit, ⌃⌘F full screen, ⇧⌘W disconnect, ⌘` / ⇧⌘` cycle windows.
+/// (⌘Tab and ⌘Space never reach the app.)
+pub fn is_mac_shortcut(keycode: u16, ctrl: bool, shift: bool) -> bool {
+    const KC_Q: u16 = 0x0C;
+    const KC_F: u16 = 0x03;
+    const KC_W: u16 = 0x0D;
+    const KC_GRAVE: u16 = 0x32;
+    match keycode {
+        KC_Q => !ctrl && !shift,
+        KC_F => ctrl,
+        KC_W => shift,
+        KC_GRAVE => !ctrl,
+        _ => false,
+    }
+}
+
 pub fn ctrl_alt_del() -> Vec<Operation> {
     vec![
         Operation::KeyPressed(SC_LCTRL),
@@ -380,6 +397,23 @@ mod tests {
         assert!(modifier_is_down(KC_OPT_R, 0x0040));
         assert!(modifier_is_down(KC_CTRL_R, 0x2000));
         assert!(!modifier_is_down(0x00, 0xFFFF)); // not a modifier
+    }
+
+    #[test]
+    fn mac_shortcuts_stay_with_the_mac() {
+        // (keycode, ctrl, shift): ⌘Q, ⌃⌘F, ⇧⌘W, ⌘` and ⇧⌘` (window cycling)
+        assert!(is_mac_shortcut(0x0C, false, false));
+        assert!(is_mac_shortcut(0x03, true, false));
+        assert!(is_mac_shortcut(0x0D, false, true));
+        assert!(is_mac_shortcut(0x32, false, false));
+        assert!(is_mac_shortcut(0x32, false, true));
+    }
+
+    #[test]
+    fn other_cmd_shortcuts_go_to_the_remote() {
+        assert!(!is_mac_shortcut(0x08, false, false)); // ⌘C → Ctrl+C
+        assert!(!is_mac_shortcut(0x0D, false, false)); // ⌘W → Ctrl+W
+        assert!(!is_mac_shortcut(0x03, false, false)); // ⌘F → Ctrl+F
     }
 
     #[test]

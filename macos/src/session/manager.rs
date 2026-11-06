@@ -226,7 +226,10 @@ impl SessionManager {
                 (self.callbacks.on_status)(id, ItemStatus::Connected);
                 tracing::info!(connection = %id, "session connected");
                 #[cfg(debug_assertions)]
-                crate::dev::resize_if_requested(&windows);
+                {
+                    crate::dev::resize_if_requested(&windows);
+                    crate::dev::close_if_requested(&windows);
+                }
             }
             SessionEvent::CertificateUntrusted { fingerprint, previous } => {
                 let Some(name) = self.sessions.borrow().get(id).map(|s| s.conn.name.clone()) else { return };
@@ -281,15 +284,22 @@ impl SessionManager {
         let s = self.sessions.borrow_mut().remove(id);
         if let Some(s) = s {
             s.shut_down();
+            tracing::info!(connection = %id, "session closed");
         }
         (self.callbacks.on_status)(id, ItemStatus::Idle);
     }
 
-    /// A session window was closed by the user.
+    /// A session window was closed by the user. This runs inside AppKit's `-close` /
+    /// `windowWillClose:`, so the session (window, delegate) is torn down afterwards.
     fn closed(&self, id: &str, token: u64) {
-        if self.current(id, token) {
-            self.close(id);
-        }
+        let id = id.to_owned();
+        crate::app::defer_main(move || {
+            if let Some(m) = manager() {
+                if m.current(&id, token) {
+                    m.close(&id);
+                }
+            }
+        });
     }
 
     pub fn disconnect(&self, id: &str) {

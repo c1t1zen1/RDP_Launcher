@@ -26,20 +26,31 @@ use crate::session::clipboard_codec::{decode_unicode_text, encode_unicode_text, 
 
 const POLL_SECS: f64 = 0.5;
 
+/// Where a session's clipboard messages go (its RDP input queue; a recorder in tests).
+type ClipboardSink = Box<dyn Fn(ClipboardMessage) + Send + Sync>;
+
 /// State shared between a session's backend (tokio thread) and its link (main thread).
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Shared {
     /// The Mac's current clipboard text, offered to the server.
     local_text: Mutex<Option<String>>,
-    sender: Mutex<Option<RdpInputSender>>,
+    sink: Mutex<Option<ClipboardSink>>,
+}
+
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shared").finish_non_exhaustive()
+    }
 }
 
 impl Shared {
+    fn set_sink(&self, sink: Option<ClipboardSink>) {
+        *self.sink.lock().expect("clipboard sink") = sink;
+    }
+
     fn send(&self, message: ClipboardMessage) {
-        if let Some(sender) = self.sender.lock().expect("clipboard sender").as_ref() {
-            if let Err(e) = sender.send_clipboard(message) {
-                tracing::debug!(error = %e, "clipboard message dropped");
-            }
+        if let Some(sink) = self.sink.lock().expect("clipboard sink").as_ref() {
+            sink(message);
         }
     }
 
@@ -98,7 +109,8 @@ impl CliprdrBackend for MacClipboardBackend {
             return;
         }
         let text = decode_unicode_text(response.data());
-        on_main(move |mtm| write_pasteboard(mtm, &text));
+        let origin = Arc::clone(&self.shared);
+        on_main(move |mtm| write_pasteboard(mtm, &text, &origin));
     }
 
     fn on_file_contents_request(&mut self, _request: FileContentsRequest) {}
@@ -128,12 +140,16 @@ pub struct ClipboardLink {
 impl ClipboardLink {
     /// Start delivering local copies to this session.
     pub fn attach(self: &Rc<Self>, sender: RdpInputSender) {
-        *self.shared.sender.lock().expect("clipboard sender") = Some(sender);
+        self.shared.set_sink(Some(Box::new(move |message| {
+            if let Err(e) = sender.send_clipboard(message) {
+                tracing::debug!(error = %e, "clipboard message dropped");
+            }
+        })));
         HUB.with(|h| h.borrow_mut().links.push(Rc::downgrade(self)));
     }
 
     pub fn detach(&self) {
-        self.shared.sender.lock().expect("clipboard sender").take();
+        self.shared.set_sink(None);
     }
 
     fn local_copy(&self, text: &str) {
@@ -225,8 +241,19 @@ fn poll_pasteboard() {
     }
 }
 
-/// Remote → Mac: put text on the pasteboard without echoing it back to the servers.
-fn write_pasteboard(_mtm: MainThreadMarker, text: &str) {
+/// Text copied on one server becomes every session's Mac clipboard text, and is offered
+/// to all the *other* servers (so copy on server A, paste on server B works).
+fn fan_out_remote_text(origin: &Arc<Shared>, sessions: impl IntoIterator<Item = Arc<Shared>>, text: &str) {
+    for shared in sessions {
+        *shared.local_text.lock().expect("clipboard text") = Some(text.to_owned());
+        if !Arc::ptr_eq(&shared, origin) {
+            shared.announce_local_text();
+        }
+    }
+}
+
+/// Remote → Mac: put text on the pasteboard without echoing it back as a local copy.
+fn write_pasteboard(_mtm: MainThreadMarker, text: &str, origin: &Arc<Shared>) {
     let pb = NSPasteboard::generalPasteboard();
     pb.clearContents();
     pb.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
@@ -236,9 +263,38 @@ fn write_pasteboard(_mtm: MainThreadMarker, text: &str) {
             w.suppress_next(count);
         }
     });
-    // Other sessions should still see the new text as the Mac's clipboard.
-    let links = HUB.with(|h| h.borrow().links.iter().filter_map(Weak::upgrade).collect::<Vec<_>>());
-    for link in links {
-        *link.shared.local_text.lock().expect("clipboard text") = Some(text.to_owned());
+    let sessions = HUB.with(|h| {
+        h.borrow().links.iter().filter_map(Weak::upgrade).map(|l| Arc::clone(&l.shared)).collect::<Vec<_>>()
+    });
+    fan_out_remote_text(origin, sessions, text);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recording() -> (Arc<Shared>, Arc<Mutex<Vec<String>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::new(Shared::default());
+        let sink_log = Arc::clone(&log);
+        shared.set_sink(Some(Box::new(move |m| sink_log.lock().unwrap().push(format!("{m:?}")))));
+        (shared, log)
+    }
+
+    #[test]
+    fn remote_copy_is_announced_to_other_sessions_only() {
+        let (a, a_log) = recording();
+        let (b, b_log) = recording();
+        let (c, c_log) = recording();
+        fan_out_remote_text(&a, [a.clone(), b.clone(), c.clone()], "copied on A");
+        assert!(a_log.lock().unwrap().is_empty(), "the source session is not re-offered its own text");
+        for log in [&b_log, &c_log] {
+            let log = log.lock().unwrap();
+            assert_eq!(log.len(), 1);
+            assert!(log[0].starts_with("SendInitiateCopy"), "{}", log[0]);
+        }
+        for s in [&a, &b, &c] {
+            assert_eq!(s.local_text.lock().unwrap().as_deref(), Some("copied on A"));
+        }
     }
 }

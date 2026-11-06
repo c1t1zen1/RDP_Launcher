@@ -108,3 +108,13 @@ pub fn snapshot_layer(view: &objc2_app_kit::NSView, name: &str) {
         data.writeToFile_atomically(&NSString::from_str(&format!("{prefix}-{name}.png")), true);
     }
 }
+
+/// Debug aid: `RDPL_DEV_CLOSE=1` closes the session's window (as the user would) once connected.
+pub fn close_if_requested(windows: &crate::session::window::SessionWindows) {
+    if std::env::var("RDPL_DEV_CLOSE").is_err() {
+        return;
+    }
+    if let Some(window) = windows.windows().first() {
+        window.performClose(None);
+    }
+}

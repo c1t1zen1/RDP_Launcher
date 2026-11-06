@@ -35,6 +35,8 @@ an xrdp server where noted.
 - [ ] After ⌘Tab away and back, no keys are stuck (e.g. Shift or Ctrl).
 - [ ] Session → Send Ctrl+Alt+Del shows the Windows security screen; Send Windows Key opens Start.
 - [ ] Copy text on the Mac and paste it remotely; copy remotely and paste on the Mac (including emoji).
+- [ ] With two servers open: copy text on server A, paste it on server B.
+- [ ] ⌘\` (and ⇧⌘\`) switch between session windows instead of going to the remote.
 - [ ] Remote sound plays on the Mac (with Sound on).
 - [ ] Shared folder (e.g. Downloads): Explorer → This PC shows **"Downloads on Mac"**; files open, save and delete.
 - [ ] Closing the session window disconnects and clears the green glow.

@@ -32,6 +32,30 @@ pub fn on_main(f: impl FnOnce(MainThreadMarker) + Send + 'static) {
     });
 }
 
+thread_local! {
+    static DEFERRED: std::cell::RefCell<Vec<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` on the main thread after the current AppKit call returns — e.g. to tear down
+/// a window and its delegate from inside that delegate's own callback.
+pub fn defer_main(f: impl FnOnce() + 'static) {
+    DEFERRED.with(|q| q.borrow_mut().push(Box::new(f)));
+    on_main(|_| run_deferred());
+}
+
+/// Run everything queued by [`defer_main`] (normally called from the main queue).
+pub fn run_deferred() {
+    loop {
+        let batch = DEFERRED.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        if batch.is_empty() {
+            return;
+        }
+        for f in batch {
+            f();
+        }
+    }
+}
+
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; no Drop impl.
     #[unsafe(super(NSObject))]
@@ -180,4 +204,20 @@ pub fn run() {
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
     app.run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    #[test]
+    fn defer_main_runs_later_not_now() {
+        let token = Rc::new(());
+        let held = Rc::clone(&token);
+        defer_main(move || drop(held));
+        assert_eq!(Rc::strong_count(&token), 2, "work must not run synchronously");
+        run_deferred();
+        assert_eq!(Rc::strong_count(&token), 1, "work runs once the queue is drained");
+    }
 }

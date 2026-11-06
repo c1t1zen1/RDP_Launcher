@@ -361,10 +361,13 @@ impl SessionWindows {
         }
     }
 
-    /// Close every window without asking (the session already ended).
+    /// Close every window without asking (the session already ended). Windows that are
+    /// already closed (e.g. the one the user just closed) are left alone.
     pub fn close_all(&self) {
         for (window, _) in &self.windows {
-            window.close();
+            if window.isVisible() || window.isMiniaturized() {
+                window.close();
+            }
         }
     }
 

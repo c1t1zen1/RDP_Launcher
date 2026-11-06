@@ -252,14 +252,12 @@ fn other_button(number: isize) -> Option<MouseButton> {
     }
 }
 
-/// Shortcuts that stay with the Mac: ⌘Q (quit), ⌃⌘F (full screen), ⌘⇧W (disconnect).
 fn is_reserved_shortcut(keycode: u16, flags: NSEventModifierFlags) -> bool {
-    const KC_Q: u16 = 0x0C;
-    const KC_F: u16 = 0x03;
-    const KC_W: u16 = 0x0D;
-    let ctrl = flags.contains(NSEventModifierFlags::Control);
-    let shift = flags.contains(NSEventModifierFlags::Shift);
-    (keycode == KC_Q && !ctrl && !shift) || (keycode == KC_F && ctrl) || (keycode == KC_W && shift)
+    keymap::is_mac_shortcut(
+        keycode,
+        flags.contains(NSEventModifierFlags::Control),
+        flags.contains(NSEventModifierFlags::Shift),
+    )
 }
 
 impl RdpView {
