@@ -1,0 +1,64 @@
+[package]
+name = "rdp-launcher-macos"
+version = "1.0.0"
+edition = "2021"
+authors = ["c1t1zen"]
+description = "One-click RDP connection launcher with a built-in RDP client for macOS"
+repository = "https://github.com/c1t1zen1/RDP_Launcher"
+license = "MIT"
+publish = false
+
+# Standalone package: never part of the Windows crate in the repo root.
+[workspace]
+
+[lib]
+name = "rdp_launcher"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rdp-launcher"
+path = "src/main.rs"
+
+[dependencies]
+# IronRDP — every crate pinned to the same git revision so the type families unify.
+ironrdp-client = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c", features = ["rustls", "sound", "clipboard", "rdpdr", "openh264"] }
+ironrdp-input = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-pdu = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-connector = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-displaycontrol = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-tls = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c", features = ["rustls"] }
+ironrdp-cliprdr = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-rdpdr = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-rdpdr-native = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-graphics = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-quartz-core = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-foundation = "0.3"
+dispatch2 = "0.3"
+security-framework = "3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+smallvec = "1"
+
+[dev-dependencies]
+ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
