@@ -15,6 +15,7 @@ use crate::launcher::edit_dialog::{self, PasswordChange};
 use crate::launcher::status_item::{self, StatusTarget};
 use crate::launcher::{about, ItemStatus, LauncherCallbacks, LauncherController};
 use crate::model::{Connection, Settings, Store};
+use crate::session::manager::{manager, SessionCallbacks, SessionManager};
 
 pub struct AppState {
     pub store: Store,
@@ -43,15 +44,61 @@ pub fn show_launcher() {
     }
 }
 
-/// Number of open RDP sessions (sessions arrive with the session manager).
-pub fn session_count() -> usize {
-    0
+fn status_of(id: &str) -> ItemStatus {
+    manager().map_or(ItemStatus::Idle, |m| m.status_of(id))
 }
 
-/// Ask before quitting while sessions are open.
+fn index_of(id: &str) -> Option<usize> {
+    with_state(|s| s.conns.iter().position(|c| c.id == id)).flatten()
+}
+
+/// Number of open RDP sessions.
+pub fn session_count() -> usize {
+    manager().map_or(0, |m| m.count())
+}
+
+/// Ask before quitting while sessions are open; disconnects them if the user agrees.
 pub fn confirm_quit(mtm: MainThreadMarker) -> bool {
     let n = session_count();
-    n == 0 || confirm(mtm, &format!("Disconnect {n} session(s) and quit?"), "Quit")
+    if n == 0 {
+        return true;
+    }
+    let ok = confirm(mtm, &format!("Disconnect {n} session(s) and quit?"), "Quit");
+    if ok {
+        if let Some(m) = manager() {
+            m.disconnect_all();
+        }
+    }
+    ok
+}
+
+fn connect(i: usize) {
+    let Some(Some(conn)) = with_state(|s| s.conns.get(i).cloned()) else { return };
+    if let Some(m) = manager() {
+        m.connect(&conn);
+    }
+}
+
+fn set_status(id: &str, status: ItemStatus) {
+    if let (Some(i), Some(l)) = (index_of(id), launcher()) {
+        l.set_status(i, status);
+        #[cfg(debug_assertions)]
+        if status == ItemStatus::Connected {
+            if let Some(view) = l.window().contentView() {
+                view.displayIfNeeded();
+                crate::dev::snapshot_if_requested(&view, "launcher-connected");
+            }
+        }
+    }
+}
+
+fn trust(id: &str, fingerprint: String) {
+    with_state(|s| {
+        if let Some(c) = s.conns.iter_mut().find(|c| c.id == id) {
+            c.cert_fingerprint = Some(fingerprint);
+            save(s);
+        }
+    });
 }
 
 fn save(state: &AppState) {
@@ -65,7 +112,7 @@ pub fn refresh_list() {
     let items = with_state(|s| {
         s.conns
             .iter()
-            .map(|c| (c.name.clone(), c.host.clone(), ItemStatus::Idle))
+            .map(|c| (c.name.clone(), c.host.clone(), status_of(&c.id)))
             .collect::<Vec<_>>()
     })
     .unwrap_or_default();
@@ -81,8 +128,20 @@ pub fn start(mtm: MainThreadMarker) {
     let pinned = settings.always_on_top;
     STATE.with(|s| *s.borrow_mut() = Some(AppState { store, conns, settings, launcher: None, status_item: None }));
 
+    SessionManager::install(
+        mtm,
+        SessionCallbacks {
+            on_status: Box::new(set_status),
+            on_edit_request: Box::new(move |id| {
+                if let Some(i) = index_of(id) {
+                    edit(mtm, i);
+                }
+            }),
+            on_trust: Box::new(trust),
+        },
+    );
     let callbacks = LauncherCallbacks {
-        connect: Box::new(|i| tracing::info!(index = i, "connect requested")),
+        connect: Box::new(connect),
         edit: Box::new(move |i| edit(mtm, i)),
         duplicate: Box::new(duplicate),
         delete: Box::new(move |i| delete(mtm, i)),
@@ -138,10 +197,13 @@ pub(crate) fn edit(mtm: MainThreadMarker, i: usize) {
     with_state(|s| {
         // Look up by id: the list may have changed while the dialog was open.
         if let Some(slot) = s.conns.iter_mut().find(|c| c.id == result.connection.id) {
-            *slot = result.connection;
+            *slot = result.connection.clone();
             save(s);
         }
     });
+    if let Some(m) = manager() {
+        m.update_connection(&result.connection);
+    }
     refresh_list();
 }
 
@@ -185,6 +247,9 @@ fn delete(mtm: MainThreadMarker, i: usize) {
     let Some(Some(name)) = with_state(|s| s.conns.get(i).map(|c| c.name.clone())) else { return };
     if !confirm(mtm, &format!("Delete \"{name}\"?"), "Delete") {
         return;
+    }
+    if let (Some(Some(id)), Some(m)) = (with_state(|s| s.conns.get(i).map(|c| c.id.clone())), manager()) {
+        m.disconnect(&id);
     }
     with_state(|s| {
         if i < s.conns.len() {

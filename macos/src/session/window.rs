@@ -164,6 +164,8 @@ impl SessionWindows {
             (make_cg_image(fb.pixels(), fb.width(), fb.height()), fb.width(), fb.height())
         };
         if let (Some(img), w, h) = image {
+            #[cfg(debug_assertions)]
+            crate::dev::snapshot_frame(&img);
             for (_, view) in &self.windows {
                 view.present(&img, w, h);
             }
