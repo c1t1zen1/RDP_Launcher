@@ -42,9 +42,9 @@ define_class!(
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _notification: &NSNotification) {
             let mtm = MainThreadMarker::from(self);
+            crate::controller::start(mtm);
             #[cfg(debug_assertions)]
             crate::dev::start_from_env(mtm);
-            let _ = mtm;
         }
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]

@@ -109,3 +109,20 @@ fn handle_event(mtm: MainThreadMarker, event: SessionEvent) {
         }
     }
 }
+
+/// Debug aid: `RDPL_SNAPSHOT=/path/prefix` writes `<prefix>-<name>.png` renders of views
+/// (no Screen Recording permission needed — it draws the app's own views offscreen).
+pub fn snapshot_if_requested(view: &objc2_app_kit::NSView, name: &str) {
+    use objc2_app_kit::NSBitmapImageFileType;
+    use objc2_foundation::{NSDictionary, NSString};
+    let Ok(prefix) = std::env::var("RDPL_SNAPSHOT") else { return };
+    let rect = view.bounds();
+    let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(rect) else { return };
+    view.cacheDisplayInRect_toBitmapImageRep(rect, &rep);
+    let data = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) };
+    if let Some(data) = data {
+        let path = format!("{prefix}-{name}.png");
+        data.writeToFile_atomically(&NSString::from_str(&path), true);
+        tracing::info!(%path, "snapshot written");
+    }
+}
