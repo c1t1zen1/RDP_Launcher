@@ -1,4 +1,6 @@
 pub mod alerts;
+pub mod clipboard;
+pub mod clipboard_codec;
 pub mod engine;
 pub mod framebuffer;
 pub mod geometry;

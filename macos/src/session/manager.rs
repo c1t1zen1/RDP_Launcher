@@ -15,6 +15,7 @@ use crate::displays::current_displays;
 use crate::model::{Connection, DisplayMode};
 use crate::monitors::{even_size, remote_layout, resolve_selection, DisplayInfo, RemoteMonitor};
 use crate::session::alerts::{self, FailureChoice};
+use crate::session::clipboard::{new_clipboard, ClipboardLink};
 use crate::session::engine::{start_session, FailureKind, SessionEvent, SessionHandle, SessionRequest};
 use crate::session::window::{windowed_size, SessionWindows};
 
@@ -24,7 +25,18 @@ struct Session {
     password: String,
     handle: SessionHandle,
     windows: Rc<SessionWindows>,
+    clipboard: Rc<ClipboardLink>,
     connected: bool,
+}
+
+impl Session {
+    /// Stop everything for this session (windows are closed without re-entering the manager).
+    fn shut_down(&self) {
+        self.clipboard.detach();
+        self.windows.set_on_closed(Box::new(|| {}));
+        self.handle.disconnect();
+        self.windows.close_all();
+    }
 }
 
 pub struct SessionCallbacks {
@@ -120,6 +132,7 @@ impl SessionManager {
 
         let (displays, layout) = self.layout_for(&conn);
         let (username, domain) = conn.credentials();
+        let (clipboard_factory, clipboard) = new_clipboard(self.mtm);
         let req = SessionRequest {
             host: host.clone(),
             port,
@@ -130,7 +143,7 @@ impl SessionManager {
             layout: layout.clone(),
             sound: conn.sound,
             shared_folder: None,
-            clipboard: None,
+            clipboard: Some(Box::new(clipboard_factory)),
         };
         let id = conn.id.clone();
         let event_id = id.clone();
@@ -146,6 +159,8 @@ impl SessionManager {
                 });
             }),
         );
+        // Attach right away so the server's first clipboard "ready" is answered.
+        clipboard.attach(handle.input_sender());
         let title = format!("{} — {}", conn.name, conn.host);
         let windows = SessionWindows::open(self.mtm, &title, handle.clone(), conn.display, &displays, &layout);
         let closed_id = id.clone();
@@ -154,7 +169,7 @@ impl SessionManager {
                 m.closed(&closed_id, token);
             }
         }));
-        self.sessions.borrow_mut().insert(id.clone(), Session { token, conn, password, handle, windows, connected: false });
+        self.sessions.borrow_mut().insert(id.clone(), Session { token, conn, password, handle, windows, clipboard, connected: false });
         (self.callbacks.on_status)(&id, ItemStatus::Connecting);
         tracing::info!(connection = %id, "session window opened");
     }
@@ -242,9 +257,7 @@ impl SessionManager {
     /// Close this session's windows and start it again (after `adjust`).
     fn restart(&self, id: &str, adjust: impl FnOnce(&mut Connection, &mut String)) {
         let Some(mut s) = self.sessions.borrow_mut().remove(id) else { return };
-        s.windows.set_on_closed(Box::new(|| {}));
-        s.handle.disconnect();
-        s.windows.close_all();
+        s.shut_down();
         adjust(&mut s.conn, &mut s.password);
         // Re-read the Keychain in case the password was changed meanwhile.
         let password = Keychain::app().get(id).unwrap_or(s.password);
@@ -254,9 +267,7 @@ impl SessionManager {
     fn close(&self, id: &str) {
         let s = self.sessions.borrow_mut().remove(id);
         if let Some(s) = s {
-            s.windows.set_on_closed(Box::new(|| {}));
-            s.handle.disconnect();
-            s.windows.close_all();
+            s.shut_down();
         }
         (self.callbacks.on_status)(id, ItemStatus::Idle);
     }

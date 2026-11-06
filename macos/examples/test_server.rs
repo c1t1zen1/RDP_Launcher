@@ -6,18 +6,27 @@
 //! Sign in as `user` / `password`. The desktop shows a test pattern: red top-left,
 //! green top-right, blue bottom-left, white bottom-right, with a grey grid every
 //! 100 px, so orientation, scaling and multi-monitor placement are easy to check.
-//! Keyboard and mouse input, and resize requests, are printed to the terminal.
+//! Keyboard and mouse input, resize requests and clipboard text are printed to the
+//! terminal. On connect the server offers the clipboard text "Hello from the test server".
 //! Uses IronRDP's self-signed test certificate from `tests/certs`.
 
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend, CliprdrBackendFactory};
+use ironrdp_cliprdr::pdu::{
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
+    FormatDataRequest, FormatDataResponse, LockDataId,
+};
+use ironrdp_core::{impl_as_any, IntoOwned};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_server::{
-    BitmapUpdate, Credentials, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat,
-    RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerResult, TlsIdentityCtx,
+    BitmapUpdate, CliprdrServerFactory, Credentials, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent,
+    MouseEvent, PixelFormat, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent,
+    ServerEventSender, ServerResult, TlsIdentityCtx,
 };
+use rdp_launcher::session::clipboard_codec::{decode_unicode_text, encode_unicode_text};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 #[derive(Default)]
@@ -109,6 +118,70 @@ impl RdpServerDisplay for Display {
     }
 }
 
+const SERVER_TEXT: &str = "Hello from the test server";
+
+#[derive(Debug)]
+struct Clip(Option<UnboundedSender<ServerEvent>>);
+
+impl_as_any!(Clip);
+
+impl Clip {
+    fn send(&self, message: ClipboardMessage) {
+        if let Some(tx) = &self.0 {
+            let _ = tx.send(ServerEvent::Clipboard(message));
+        }
+    }
+}
+
+impl CliprdrBackend for Clip {
+    fn temporary_directory(&self) -> &str {
+        ".cliprdr"
+    }
+    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
+        ClipboardGeneralCapabilityFlags::empty()
+    }
+    fn on_ready(&mut self) {
+        println!("clipboard ready; offering {SERVER_TEXT:?}");
+        self.send(ClipboardMessage::SendInitiateCopy(vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)]));
+    }
+    fn on_request_format_list(&mut self) {}
+    fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, formats: &[ClipboardFormat]) {
+        if formats.iter().any(|f| f.id() == ClipboardFormatId::CF_UNICODETEXT) {
+            self.send(ClipboardMessage::SendInitiatePaste(ClipboardFormatId::CF_UNICODETEXT));
+        }
+    }
+    fn on_format_data_request(&mut self, _: FormatDataRequest) {
+        let data = FormatDataResponse::new_data(encode_unicode_text(SERVER_TEXT)).into_owned();
+        self.send(ClipboardMessage::SendFormatData(data));
+    }
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
+        if !response.is_error() {
+            println!("client clipboard: {:?}", decode_unicode_text(response.data()));
+        }
+    }
+    fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: LockDataId) {}
+    fn on_unlock(&mut self, _: LockDataId) {}
+}
+
+struct ClipFactory(Option<UnboundedSender<ServerEvent>>);
+
+impl CliprdrBackendFactory for ClipFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
+        Box::new(Clip(self.0.clone()))
+    }
+}
+
+impl ServerEventSender for ClipFactory {
+    fn set_sender(&mut self, sender: UnboundedSender<ServerEvent>) {
+        self.0 = Some(sender);
+    }
+}
+
+impl CliprdrServerFactory for ClipFactory {}
+
 struct Input;
 
 impl RdpServerInputHandler for Input {
@@ -136,6 +209,7 @@ async fn main() {
         .with_hybrid(acceptor, identity.pub_key)
         .with_input_handler(Input)
         .with_display_handler(Display(shared))
+        .with_cliprdr_factory(Some(Box::new(ClipFactory(None))))
         .build();
     server.set_credentials(Some(Credentials { username: "user".into(), password: "password".into(), domain: None }));
     println!("test RDP server on 127.0.0.1:{port} — sign in as user / password");

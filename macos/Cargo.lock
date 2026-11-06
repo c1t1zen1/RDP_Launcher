@@ -3223,6 +3223,7 @@ dependencies = [
  "ironrdp-client",
  "ironrdp-cliprdr",
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-graphics",
  "ironrdp-input",

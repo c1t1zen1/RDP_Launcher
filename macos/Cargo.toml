@@ -30,6 +30,7 @@ ironrdp-tls = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce86
 ironrdp-cliprdr = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
 ironrdp-rdpdr = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
 ironrdp-rdpdr-native = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-core = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
 ironrdp-graphics = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
