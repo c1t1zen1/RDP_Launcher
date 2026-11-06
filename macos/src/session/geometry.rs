@@ -39,6 +39,13 @@ pub fn contents_rect_top_left(m: &ViewMapping, fb_w: u16, fb_h: u16) -> (f64, f6
     )
 }
 
+/// Remote desktop size for a view of `view_w`×`view_h` points (even width, 200..=8192).
+pub fn remote_size(view_w: f64, view_h: f64) -> (u16, u16) {
+    let w = crate::monitors::even_size(view_w.round().max(0.0) as u32);
+    let h = (view_h.round().max(0.0) as u32).clamp(200, 8192);
+    (w as u16, h as u16)
+}
+
 /// Converts AppKit scroll deltas to RDP wheel rotation units (120 per notch).
 #[derive(Debug, Default)]
 pub struct ScrollAccumulator {
@@ -104,6 +111,18 @@ mod tests {
             src: Region { left: 1920, top: 0, right: 3839, bottom: 1199 },
         };
         assert_eq!(contents_rect_top_left(&m, 3840, 1200), (0.5, 0.0, 0.5, 1.0));
+    }
+
+    #[test]
+    fn remote_size_rounds_and_evens_width() {
+        assert_eq!(remote_size(1279.6, 799.4), (1280, 799));
+        assert_eq!(remote_size(1281.0, 800.0), (1280, 800));
+    }
+
+    #[test]
+    fn remote_size_is_clamped() {
+        assert_eq!(remote_size(50.0, 10.0), (200, 200));
+        assert_eq!(remote_size(10_000.0, 9_000.0), (8192, 8192));
     }
 
     #[test]

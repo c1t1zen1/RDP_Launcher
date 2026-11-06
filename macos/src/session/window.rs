@@ -1,20 +1,25 @@
 //! The window(s) showing one RDP session.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSBackingStoreType, NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask,
 };
-use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer};
 
+use crate::model::DisplayMode;
+use crate::monitors::{DisplayInfo, Rect, RemoteMonitor};
 use crate::session::engine::{PointerUpdate, SessionHandle};
 use crate::session::framebuffer::Region;
-use crate::session::geometry::ViewMapping;
+use crate::session::geometry::{remote_size, ViewMapping};
 use crate::session::view::{make_cg_image, RdpView};
+
+/// Wait this long after the last window resize before asking the server to resize.
+const RESIZE_DEBOUNCE_SECS: f64 = 0.3;
 
 pub const WINDOWED_W: f64 = 1280.0;
 pub const WINDOWED_H: f64 = 800.0;
@@ -23,6 +28,10 @@ pub struct DelegateIvars {
     handle: SessionHandle,
     views: RefCell<Vec<Retained<RdpView>>>,
     on_closed: RefCell<Option<Box<dyn Fn()>>>,
+    /// Single-window sessions follow the window size; multi-monitor ones don't.
+    follows_window: Cell<bool>,
+    resize_timer: RefCell<Option<Retained<NSTimer>>>,
+    last_size: Cell<(u16, u16)>,
 }
 
 define_class!(
@@ -56,6 +65,42 @@ define_class!(
                 view.release_input();
             }
         }
+
+        /// Restart the debounce; the server is asked to resize once resizing stops.
+        #[unsafe(method(windowDidResize:))]
+        fn window_did_resize(&self, _notification: &NSNotification) {
+            if !self.ivars().follows_window.get() {
+                return;
+            }
+            if let Some(t) = self.ivars().resize_timer.borrow_mut().take() {
+                t.invalidate();
+            }
+            let timer = unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    RESIZE_DEBOUNCE_SECS,
+                    self,
+                    sel!(resizeSettled:),
+                    None,
+                    false,
+                )
+            };
+            *self.ivars().resize_timer.borrow_mut() = Some(timer);
+        }
+    }
+
+    impl SessionWindowDelegate {
+        #[unsafe(method(resizeSettled:))]
+        fn resize_settled(&self, _timer: Option<&AnyObject>) {
+            self.ivars().resize_timer.borrow_mut().take();
+            let Some(view) = self.ivars().views.borrow().first().cloned() else { return };
+            let size = view.bounds().size;
+            let wanted = remote_size(size.width, size.height);
+            if wanted != self.ivars().last_size.get() {
+                self.ivars().last_size.set(wanted);
+                tracing::info!(width = wanted.0, height = wanted.1, "requesting remote resize");
+                self.ivars().handle.resize(wanted.0, wanted.1);
+            }
+        }
     }
 );
 
@@ -65,6 +110,9 @@ impl SessionWindowDelegate {
             handle,
             views: RefCell::new(Vec::new()),
             on_closed: RefCell::new(None),
+            follows_window: Cell::new(true),
+            resize_timer: RefCell::new(None),
+            last_size: Cell::new((0, 0)),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -85,50 +133,78 @@ pub fn windowed_size(mtm: MainThreadMarker) -> (f64, f64) {
     }
 }
 
+fn ns_rect(r: Rect) -> NSRect {
+    NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))
+}
+
+/// A titled, resizable window with `w`×`h` points of content, ready for native full screen.
+fn titled_window(mtm: MainThreadMarker, title: &str, w: f64, h: f64) -> Retained<NSWindow> {
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h));
+    let style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Miniaturizable
+        | NSWindowStyleMask::Resizable;
+    let window = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            rect,
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    unsafe { window.setReleasedWhenClosed(false) };
+    window.setTitle(&NSString::from_str(title));
+    window.setCollectionBehavior(NSWindowCollectionBehavior::FullScreenPrimary);
+    window.setAcceptsMouseMovedEvents(true);
+    window.setContentMinSize(NSSize::new(400.0, 300.0));
+    window
+}
+
 fn full_region(w: f64, h: f64) -> Region {
     Region { left: 0, top: 0, right: (w as u16).saturating_sub(1), bottom: (h as u16).saturating_sub(1) }
 }
 
 impl SessionWindows {
-    /// A normal, resizable window of `size` points, centred on the main display.
-    pub fn open_windowed(
+    /// Open the session's window(s) for `mode`. `layout` is what the server was asked
+    /// for; `displays` are the chosen Mac displays (full screen only).
+    pub fn open(
         mtm: MainThreadMarker,
         title: &str,
         handle: SessionHandle,
-        size: (f64, f64),
+        mode: DisplayMode,
+        displays: &[DisplayInfo],
+        layout: &[RemoteMonitor],
     ) -> Rc<SessionWindows> {
-        let (w, h) = size;
-        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h));
-        let style = NSWindowStyleMask::Titled
-            | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Miniaturizable
-            | NSWindowStyleMask::Resizable;
-        let window = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                rect,
-                style,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
-        unsafe { window.setReleasedWhenClosed(false) };
-        window.setTitle(&NSString::from_str(title));
-        window.setCollectionBehavior(NSWindowCollectionBehavior::FullScreenPrimary);
-        window.setAcceptsMouseMovedEvents(true);
-
+        let first = layout.first().copied().unwrap_or(RemoteMonitor {
+            left: 0,
+            top: 0,
+            width: WINDOWED_W as u32,
+            height: WINDOWED_H as u32,
+            primary: true,
+        });
+        let (w, h) = (f64::from(first.width), f64::from(first.height));
+        let window = titled_window(mtm, title, w, h);
         let mapping = ViewMapping { view_w: w, view_h: h, src: full_region(w, h) };
         let view = RdpView::new(mtm, handle.clone(), mapping);
         window.setContentView(Some(&view));
 
         let delegate = SessionWindowDelegate::new(mtm, handle.clone());
         delegate.ivars().views.borrow_mut().push(view.clone());
+        delegate.ivars().last_size.set((first.width as u16, first.height as u16));
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
-        window.center();
+        let fullscreen = mode == DisplayMode::Fullscreen;
+        match displays.first() {
+            // Put the window on the chosen display so its full-screen Space opens there.
+            Some(d) if fullscreen => window.setFrame_display(ns_rect(d.visible_frame), false),
+            _ => window.center(),
+        }
         window.makeKeyAndOrderFront(None);
         view.make_first_responder();
-
+        if fullscreen {
+            window.toggleFullScreen(None);
+        }
         Rc::new(SessionWindows { handle, windows: vec![(window, view)], delegate })
     }
 

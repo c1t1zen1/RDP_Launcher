@@ -60,3 +60,12 @@ pub fn snapshot_frame(image: &objc2_core_graphics::CGImage) {
         data.writeToFile_atomically(&NSString::from_str(&format!("{prefix}-frame.png")), true);
     }
 }
+
+/// Debug aid: `RDPL_DEV_RESIZE=WxH` resizes a windowed session's window after it connects.
+pub fn resize_if_requested(windows: &crate::session::window::SessionWindows) {
+    let Ok(spec) = std::env::var("RDPL_DEV_RESIZE") else { return };
+    let Some((w, h)) = spec.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))) else { return };
+    if let Some(window) = windows.windows().first() {
+        window.setContentSize(objc2_foundation::NSSize::new(w, h));
+    }
+}

@@ -30,6 +30,7 @@ pub struct RdpViewIvars {
     hscroll: RefCell<ScrollAccumulator>,
     cursor: RefCell<Retained<NSCursor>>,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
+    can_toggle_full_screen: Cell<bool>,
 }
 
 define_class!(
@@ -140,6 +141,34 @@ define_class!(
             ours
         }
 
+        // ----- Session menu (found through the responder chain) -----
+
+        #[unsafe(method(toggleSessionFullScreen:))]
+        fn toggle_session_full_screen(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().can_toggle_full_screen.get() {
+                if let Some(w) = self.window() {
+                    w.toggleFullScreen(None);
+                }
+            }
+        }
+
+        #[unsafe(method(sendCtrlAltDel:))]
+        fn send_ctrl_alt_del(&self, _sender: Option<&AnyObject>) {
+            self.ivars().handle.send_operations(keymap::ctrl_alt_del());
+        }
+
+        #[unsafe(method(sendWindowsKey:))]
+        fn send_windows_key(&self, _sender: Option<&AnyObject>) {
+            self.ivars().handle.send_operations(keymap::windows_key());
+        }
+
+        #[unsafe(method(disconnectSession:))]
+        fn disconnect_session(&self, _sender: Option<&AnyObject>) {
+            if let Some(w) = self.window() {
+                w.performClose(None);
+            }
+        }
+
         // ----- mouse -----
 
         #[unsafe(method(mouseMoved:))]
@@ -243,6 +272,7 @@ impl RdpView {
             hscroll: RefCell::new(ScrollAccumulator::new()),
             cursor: RefCell::new(NSCursor::arrowCursor()),
             tracking: RefCell::new(None),
+            can_toggle_full_screen: Cell::new(true),
         });
         let view: Retained<RdpView> = unsafe { msg_send![super(this), initWithFrame: frame] };
         view.setWantsLayer(true);
@@ -256,6 +286,11 @@ impl RdpView {
 
     pub fn handle(&self) -> &SessionHandle {
         &self.ivars().handle
+    }
+
+    /// Multi-monitor sessions are always full screen.
+    pub fn set_can_toggle_full_screen(&self, on: bool) {
+        self.ivars().can_toggle_full_screen.set(on);
     }
 
     pub fn set_mapping(&self, mapping: ViewMapping) {

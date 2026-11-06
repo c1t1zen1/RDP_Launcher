@@ -138,6 +138,23 @@ fn build_main_menu(mtm: MainThreadMarker, app: &NSApplication, delegate: &AppDel
         ],
     );
     main.addItem(&edit_item);
+    let full_screen = item(mtm, "Toggle Full Screen", Some(sel!(toggleSessionFullScreen:)), "f");
+    full_screen.setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Control);
+    let disconnect = item(mtm, "Disconnect", Some(sel!(disconnectSession:)), "w");
+    disconnect.setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Shift);
+    let (session_item, _) = submenu(
+        mtm,
+        "Session",
+        &[
+            full_screen,
+            NSMenuItem::separatorItem(mtm),
+            item(mtm, "Send Ctrl+Alt+Del", Some(sel!(sendCtrlAltDel:)), ""),
+            item(mtm, "Send Windows Key", Some(sel!(sendWindowsKey:)), ""),
+            NSMenuItem::separatorItem(mtm),
+            disconnect,
+        ],
+    );
+    main.addItem(&session_item);
     let (window_item, window_menu) = submenu(
         mtm,
         "Window",

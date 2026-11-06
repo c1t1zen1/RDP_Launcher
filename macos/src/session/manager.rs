@@ -11,8 +11,9 @@ use crate::app::{on_main, runtime};
 use crate::controller::show_error;
 use crate::keychain::Keychain;
 use crate::launcher::{password_prompt, ItemStatus};
-use crate::model::Connection;
-use crate::monitors::{even_size, RemoteMonitor};
+use crate::displays::current_displays;
+use crate::model::{Connection, DisplayMode};
+use crate::monitors::{even_size, remote_layout, resolve_selection, DisplayInfo, RemoteMonitor};
 use crate::session::alerts::{self, FailureChoice};
 use crate::session::engine::{start_session, FailureKind, SessionEvent, SessionHandle, SessionRequest};
 use crate::session::window::{windowed_size, SessionWindows};
@@ -117,8 +118,7 @@ impl SessionManager {
         let token = self.next_token.get();
         self.next_token.set(token + 1);
 
-        let size = windowed_size(self.mtm);
-        let layout = vec![RemoteMonitor { left: 0, top: 0, width: even_size(size.0 as u32), height: size.1 as u32, primary: true }];
+        let (displays, layout) = self.layout_for(&conn);
         let (username, domain) = conn.credentials();
         let req = SessionRequest {
             host: host.clone(),
@@ -127,7 +127,7 @@ impl SessionManager {
             domain,
             password: password.clone(),
             trusted_fingerprint: conn.cert_fingerprint.clone(),
-            layout,
+            layout: layout.clone(),
             sound: conn.sound,
             shared_folder: None,
             clipboard: None,
@@ -147,7 +147,7 @@ impl SessionManager {
             }),
         );
         let title = format!("{} — {}", conn.name, conn.host);
-        let windows = SessionWindows::open_windowed(self.mtm, &title, handle.clone(), size);
+        let windows = SessionWindows::open(self.mtm, &title, handle.clone(), conn.display, &displays, &layout);
         let closed_id = id.clone();
         windows.set_on_closed(Box::new(move || {
             if let Some(m) = manager() {
@@ -157,6 +157,25 @@ impl SessionManager {
         self.sessions.borrow_mut().insert(id.clone(), Session { token, conn, password, handle, windows, connected: false });
         (self.callbacks.on_status)(&id, ItemStatus::Connecting);
         tracing::info!(connection = %id, "session window opened");
+    }
+
+    /// Full screen: the chosen (connected) displays; windowed: a 1280×800-ish window.
+    fn layout_for(&self, conn: &Connection) -> (Vec<DisplayInfo>, Vec<RemoteMonitor>) {
+        match conn.display {
+            DisplayMode::Fullscreen => {
+                let chosen = resolve_selection(&conn.monitors, &current_displays(self.mtm));
+                // Multi-monitor spanning arrives separately; until then use the first display.
+                let displays: Vec<DisplayInfo> = chosen.into_iter().take(1).collect();
+                let layout = remote_layout(&displays);
+                (displays, layout)
+            }
+            DisplayMode::Windowed => {
+                let (w, h) = windowed_size(self.mtm);
+                let layout =
+                    vec![RemoteMonitor { left: 0, top: 0, width: even_size(w as u32), height: h as u32, primary: true }];
+                (Vec::new(), layout)
+            }
+        }
     }
 
     fn current(&self, id: &str, token: u64) -> bool {
@@ -178,6 +197,8 @@ impl SessionManager {
                 }
                 (self.callbacks.on_status)(id, ItemStatus::Connected);
                 tracing::info!(connection = %id, "session connected");
+                #[cfg(debug_assertions)]
+                crate::dev::resize_if_requested(&windows);
             }
             SessionEvent::CertificateUntrusted { fingerprint, previous } => {
                 let Some(name) = self.sessions.borrow().get(id).map(|s| s.conn.name.clone()) else { return };
