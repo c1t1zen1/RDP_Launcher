@@ -1,0 +1,111 @@
+//! Debug-build-only shortcut: `RDPL_DEV_HOST=host[:port] RDPL_DEV_USER=… RDPL_DEV_PASS=… cargo run`
+//! opens one windowed session without the launcher. Removed once the launcher drives sessions.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use objc2::MainThreadMarker;
+
+use crate::app::{on_main, runtime};
+use crate::model::{parse_host, split_username};
+use crate::monitors::{even_size, RemoteMonitor};
+use crate::session::engine::{start_session, SessionEvent, SessionRequest};
+use crate::session::window::{windowed_size, SessionWindows};
+
+struct Dev {
+    host: String,
+    port: u16,
+    user: String,
+    password: String,
+    windows: Option<Rc<SessionWindows>>,
+}
+
+thread_local! {
+    static DEV: RefCell<Option<Dev>> = const { RefCell::new(None) };
+}
+
+pub fn start_from_env(mtm: MainThreadMarker) {
+    let Ok(host_input) = std::env::var("RDPL_DEV_HOST") else { return };
+    let (host, port) = match parse_host(&host_input) {
+        Ok(hp) => hp,
+        Err(e) => {
+            tracing::error!(%e, "RDPL_DEV_HOST");
+            return;
+        }
+    };
+    DEV.with(|d| {
+        *d.borrow_mut() = Some(Dev {
+            host,
+            port,
+            user: std::env::var("RDPL_DEV_USER").unwrap_or_default(),
+            password: std::env::var("RDPL_DEV_PASS").unwrap_or_default(),
+            windows: None,
+        })
+    });
+    connect(mtm, None);
+}
+
+fn connect(mtm: MainThreadMarker, trusted: Option<String>) {
+    let size = windowed_size(mtm);
+    DEV.with(|d| {
+        let mut d = d.borrow_mut();
+        let Some(dev) = d.as_mut() else { return };
+        if let Some(old) = dev.windows.take() {
+            old.close_all();
+        }
+        let (username, domain) = split_username(&dev.user);
+        let req = SessionRequest {
+            host: dev.host.clone(),
+            port: dev.port,
+            username,
+            domain,
+            password: dev.password.clone(),
+            trusted_fingerprint: trusted,
+            layout: vec![RemoteMonitor {
+                left: 0,
+                top: 0,
+                width: even_size(size.0 as u32),
+                height: size.1 as u32,
+                primary: true,
+            }],
+            sound: true,
+            shared_folder: None,
+            clipboard: None,
+        };
+        let handle = start_session(
+            runtime().handle(),
+            req,
+            Box::new(|event| on_main(move |mtm| handle_event(mtm, event))),
+        );
+        let title = format!("{}:{}", dev.host, dev.port);
+        dev.windows = Some(SessionWindows::open_windowed(mtm, &title, handle, size));
+    });
+}
+
+fn handle_event(mtm: MainThreadMarker, event: SessionEvent) {
+    let windows = DEV.with(|d| d.borrow().as_ref().and_then(|dev| dev.windows.clone()));
+    match event {
+        SessionEvent::FrameReady => {
+            if let Some(w) = windows {
+                w.present_frame();
+            }
+        }
+        SessionEvent::Pointer(p) => {
+            if let Some(w) = windows {
+                w.set_pointer(&p);
+            }
+        }
+        SessionEvent::CertificateUntrusted { fingerprint, .. } => {
+            tracing::warn!(%fingerprint, "dev mode: trusting server certificate and reconnecting");
+            connect(mtm, Some(fingerprint));
+        }
+        SessionEvent::Connected => tracing::info!("dev session connected"),
+        SessionEvent::Failed { kind, message } => tracing::error!(?kind, %message, "dev session failed"),
+        SessionEvent::Ended => {
+            tracing::info!("dev session ended");
+            if let Some(w) = windows {
+                w.close_all();
+            }
+        }
+    }
+}

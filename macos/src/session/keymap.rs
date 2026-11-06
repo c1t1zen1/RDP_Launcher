@@ -226,6 +226,23 @@ impl KeyTranslator {
     }
 }
 
+/// Whether modifier `keycode` is down, from the device-dependent bits of
+/// `NSEvent.modifierFlags` (NX_DEVICE*KEYMASK), which tell left and right apart.
+pub fn modifier_is_down(keycode: u16, raw_flags: u64) -> bool {
+    let mask = match keycode {
+        KC_CTRL_L => 0x0001,
+        KC_SHIFT_L => 0x0002,
+        KC_SHIFT_R => 0x0004,
+        KC_CMD_L => 0x0008,
+        KC_CMD_R => 0x0010,
+        KC_OPT_L => 0x0020,
+        KC_OPT_R => 0x0040,
+        KC_CTRL_R => 0x2000,
+        _ => return false,
+    };
+    raw_flags & mask != 0
+}
+
 pub fn ctrl_alt_del() -> Vec<Operation> {
     vec![
         Operation::KeyPressed(SC_LCTRL),
@@ -347,6 +364,22 @@ mod tests {
             k(ctrl_alt_del()),
             vec![(true, 0x1D), (true, 0x38), (true, 0xE053), (false, 0xE053), (false, 0x38), (false, 0x1D)]
         );
+    }
+
+    #[test]
+    fn modifier_state_uses_left_right_device_bits() {
+        // NX_DEVICE*KEYMASK bits from IOLLEvent.h, as found in NSEvent.modifierFlags.
+        let lshift = 0x0002;
+        let rshift = 0x0004;
+        let lcmd = 0x0008;
+        assert!(modifier_is_down(KC_SHIFT_L, lshift | rshift));
+        assert!(!modifier_is_down(KC_SHIFT_L, rshift)); // left released while right still held
+        assert!(modifier_is_down(KC_SHIFT_R, rshift));
+        assert!(modifier_is_down(KC_CMD_L, lcmd));
+        assert!(!modifier_is_down(KC_CMD_R, lcmd));
+        assert!(modifier_is_down(KC_OPT_R, 0x0040));
+        assert!(modifier_is_down(KC_CTRL_R, 0x2000));
+        assert!(!modifier_is_down(0x00, 0xFFFF)); // not a modifier
     }
 
     #[test]

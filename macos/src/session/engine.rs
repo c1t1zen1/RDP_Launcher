@@ -304,6 +304,9 @@ fn build_config(req: &SessionRequest, presented: &Arc<Mutex<Option<String>>>) ->
         .with_certificate_validation(CertificateValidation::Strict)
         .with_certificate_validation_callback(callback)
         .with_tcp_connect_attempt_timeout(TCP_CONNECT_TIMEOUT)
+        // Native macOS cursor from the server's pointer bitmaps (not drawn into the image).
+        .with_server_pointer(true)
+        .with_pointer_software_rendering(false)
         .with_sound(req.sound)
         .with_audio_capture(false)
         .with_clipboard(if req.clipboard.is_some() { ClipboardType::Enable } else { ClipboardType::Disable })
