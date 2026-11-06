@@ -2,6 +2,7 @@ pub mod app;
 pub mod certs;
 #[cfg(debug_assertions)]
 mod dev;
+pub mod keychain;
 pub mod logging;
 pub mod model;
 pub mod monitors;
