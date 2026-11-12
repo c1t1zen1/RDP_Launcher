@@ -104,7 +104,16 @@ impl SessionManager {
         let dev_password = std::env::var("RDPL_DEV_PASSWORD").ok();
         #[cfg(not(debug_assertions))]
         let dev_password: Option<String> = None;
-        let password = match Keychain::app().get(&conn.id).or(dev_password) {
+        let saved_password = match Keychain::app().get(&conn.id) {
+            Ok(password) => password,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read saved password");
+                show_error(self.mtm, "The saved password could not be read from the Keychain.",
+                    &format!("Unlock your login Keychain and allow RDP Launcher access, then try again.\n\n{e}"));
+                return;
+            }
+        };
+        let password = match saved_password.or(dev_password) {
             Some(p) => p,
             None if conn.username.trim().is_empty() => String::new(),
             None => match password_prompt::ask(self.mtm, None, &conn.name, &conn.username) {
@@ -112,6 +121,8 @@ impl SessionManager {
                     if remember {
                         if let Err(e) = Keychain::app().set(&conn.id, &p) {
                             tracing::warn!(error = %e, "could not remember password");
+                            show_error(self.mtm, "The password could not be saved in the Keychain.",
+                                &format!("This connection will use the entered password, but it has not been saved.\n\n{e}"));
                         }
                     }
                     p
@@ -276,7 +287,15 @@ impl SessionManager {
         s.shut_down();
         adjust(&mut s.conn, &mut s.password);
         // Re-read the Keychain in case the password was changed meanwhile.
-        let password = Keychain::app().get(id).unwrap_or(s.password);
+        let password = match Keychain::app().get(id) {
+            Ok(saved) => saved.unwrap_or(s.password),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not re-read saved password");
+                show_error(self.mtm, "The saved password could not be read from the Keychain.",
+                    &format!("Reconnecting with the password already used for this session.\n\n{e}"));
+                s.password
+            }
+        };
         self.start(s.conn, password);
     }
 

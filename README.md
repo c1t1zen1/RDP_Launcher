@@ -143,9 +143,17 @@ cd RDP_Launcher/macos
 ./scripts/build-app.sh        # → macos/dist/RDP-Launcher-1.0.0.dmg
 ```
 
+Linux/xrdp servers need TLS enabled. If you see `server selected STANDARD_RDP_SECURITY`,
+follow the [xrdp TLS setup](macos/README.md#xrdp-selects-standard-rdp-security).
+
 Full Mac docs: [macos/README.md](macos/README.md) · manual test checklist: [macos/TESTING.md](macos/TESTING.md)
 
 ## 📋 Changelog
+
+### macOS — unreleased fixes
+- Request RDP auto-login when a username and password are supplied, including on TLS-only xrdp servers.
+- Report Keychain access and password-saving errors instead of silently losing saved credentials.
+- Explain the TLS requirement and xrdp configuration fix when a server selects legacy Standard RDP Security.
 
 ### macOS v1.0.0 — first release (testing phase)
 - First version of RDP Launcher for Mac, with a built-in RDP client.

@@ -118,6 +118,15 @@ user account can read. Passwords never appear in the log."
       Edit the connection and re-enter username and password. Use the full
       DOMAIN\\user form for domain accounts. The account may lack Remote
       Desktop permission on the remote machine.
+  Password requested on every connection
+      Save it in Edit Connection or tick Remember in Keychain. If Keychain
+      access fails, unlock the login Keychain and allow RDP Launcher access.
+      Saved username/password request auto-login; server policy may still
+      require an interactive login.
+  'Requires legacy RDP security' / STANDARD_RDP_SECURITY
+      The built-in client requires TLS or NLA. On Linux/xrdp, set
+      security_layer=tls under [Globals] in /etc/xrdp/xrdp.ini. Ensure xrdp
+      can read its TLS certificate/private key, then restart xrdp.
   'Identity changed' warning
       The server's certificate differs from the one you trusted. That is
       expected after reinstalling the server; otherwise do not connect.

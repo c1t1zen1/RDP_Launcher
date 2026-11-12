@@ -180,7 +180,9 @@ pub(crate) fn add(mtm: MainThreadMarker) {
     let displays = current_displays(mtm);
     let initial = Connection::new("", "");
     let Some(result) = edit_dialog::show(mtm, "New Connection", &initial, false, &displays) else { return };
-    apply_password(mtm, &result.connection.id, &result.password);
+    if !apply_password(mtm, &result.connection.id, &result.password) {
+        return;
+    }
     with_state(|s| {
         s.conns.push(result.connection);
         save(s);
@@ -190,10 +192,18 @@ pub(crate) fn add(mtm: MainThreadMarker) {
 
 pub(crate) fn edit(mtm: MainThreadMarker, i: usize) {
     let Some(Some(conn)) = with_state(|s| s.conns.get(i).cloned()) else { return };
-    let has_password = Keychain::app().get(&conn.id).is_some();
+    let has_password = match Keychain::app().get(&conn.id) {
+        Ok(password) => password.is_some(),
+        Err(e) => {
+            show_error(mtm, "The saved password could not be read from the Keychain.", &e.to_string());
+            return;
+        }
+    };
     let displays = current_displays(mtm);
     let Some(result) = edit_dialog::show(mtm, "Edit Connection", &conn, has_password, &displays) else { return };
-    apply_password(mtm, &result.connection.id, &result.password);
+    if !apply_password(mtm, &result.connection.id, &result.password) {
+        return;
+    }
     with_state(|s| {
         // Look up by id: the list may have changed while the dialog was open.
         if let Some(slot) = s.conns.iter_mut().find(|c| c.id == result.connection.id) {
@@ -207,16 +217,19 @@ pub(crate) fn edit(mtm: MainThreadMarker, i: usize) {
     refresh_list();
 }
 
-fn apply_password(mtm: MainThreadMarker, id: &str, change: &PasswordChange) {
+fn apply_password(mtm: MainThreadMarker, id: &str, change: &PasswordChange) -> bool {
     let kc = Keychain::app();
-    match change {
-        PasswordChange::Keep => {}
+    let result = match change {
+        PasswordChange::Keep => Ok(()),
         PasswordChange::Clear => kc.delete(id),
-        PasswordChange::Set(p) => {
-            if let Err(e) = kc.set(id, p) {
-                tracing::error!(error = %e, "could not save password");
-                show_error(mtm, "The password could not be saved in the Keychain.", &e.to_string());
-            }
+        PasswordChange::Set(p) => kc.set(id, p),
+    };
+    match result {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::error!(error = %e, "could not update saved password");
+            show_error(mtm, "The saved password could not be updated in the Keychain.", &e.to_string());
+            false
         }
     }
 }
@@ -254,7 +267,9 @@ fn delete(mtm: MainThreadMarker, i: usize) {
     with_state(|s| {
         if i < s.conns.len() {
             let removed = s.conns.remove(i);
-            Keychain::app().delete(&removed.id);
+            if let Err(e) = Keychain::app().delete(&removed.id) {
+                tracing::warn!(error = %e, "could not delete saved password");
+            }
             save(s);
         }
     });

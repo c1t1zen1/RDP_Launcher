@@ -28,6 +28,8 @@ Desktop client, so this one carries its own, built on the pure-Rust
 
 - **One-click launch** — one button per server; it glows **green** while connected.
   Clicking an open server brings its window back instead of opening a second one.
+- **Auto-login** — saved usernames and Keychain passwords are supplied to Windows/NLA
+  and TLS-enabled xrdp servers, with RDP auto-login requested when both are present.
 - **Full screen or windowed, per connection**
   - Full screen gets its own Space: swipe with three fingers (or Ctrl+←/→) between servers.
   - Windowed sessions resize the remote desktop to fit as you drag the window edge.
@@ -41,7 +43,7 @@ Desktop client, so this one carries its own, built on the pure-Rust
   Windows key; ⌥ is Alt. ⌘Tab, ⌘Space, ⌃⌘F and ⌘Q stay with the Mac.
 - **Launcher parity with Windows** — ✏️ 📋 🗑 on every button, right-click menu, animated drag
   to reorder, always-on-top pin, About/manual, tooltips, and a menu-bar icon.
-- Works with **Windows** (Network Level Authentication) and **Linux/xrdp** servers.
+- Works with **Windows** (Network Level Authentication) and **Linux/xrdp** servers with TLS enabled.
 
 ## 🔐 Storage & security
 
@@ -118,9 +120,52 @@ clipboard activity.
 |---|---|
 | "Can't reach …" | Check the host name / IP, that Remote Desktop is on, the network or VPN, and System Settings → Privacy & Security → **Local Network** → RDP Launcher |
 | "Couldn't sign in …" | Re-enter username / password; use `DOMAIN\user` for domain accounts |
+| Password is requested every time by the launcher | Tick **Remember in Keychain**, or save it in Edit Connection. If Keychain access fails, unlock the login Keychain and allow the app access; read/save failures now show an error |
 | "Identity changed" warning | Expected after a server reinstall; otherwise don't connect |
-| xrdp shows a login screen | Normal for xrdp without saved credentials |
+| `server selected STANDARD_RDP_SECURITY` | Enable TLS on the server; see the xrdp setup below |
+| xrdp shows a login screen | Save both username and password. If it still prompts, check xrdp authentication/session settings; `autorun` selects the session used for automatic login |
 | No sound | Check the connection's Sound option and the Mac's output device |
+
+### xrdp selects Standard RDP Security
+
+The bundled IronRDP client supports TLS and NLA over TCP. It does not implement the
+RC4/FIPS security exchange needed by legacy encrypted Standard RDP Security. A server
+configured with `security_layer=rdp` therefore cannot connect to this client.
+
+On the **Linux server**, edit the existing settings under `[Globals]` in
+`/etc/xrdp/xrdp.ini`:
+
+```ini
+[Globals]
+security_layer=tls
+ssl_protocols=TLSv1.2, TLSv1.3
+```
+
+Ensure `certificate` and `key_file` point to valid PEM files readable by the xrdp
+service account. When those paths are unset, xrdp normally uses `/etc/xrdp/cert.pem`
+and `/etc/xrdp/key.pem`. `security_layer=negotiate` also works if TLS is available;
+forcing `tls` makes certificate/key problems easier to identify.
+
+On Debian/Ubuntu installations using the default `ssl-cert` group for private-key
+access, add the service account to that group if needed:
+
+```bash
+sudo adduser xrdp ssl-cert
+```
+
+Restart xrdp after changing its configuration or group membership (this may interrupt
+connections):
+
+```bash
+sudo systemctl restart xrdp
+sudo journalctl -u xrdp -n 50 --no-pager
+```
+
+Check `/var/log/xrdp.log` too if the service journal does not contain the TLS error.
+If you want to select a specific session for automatic login, set `autorun=Xorg` in
+`[Globals]` when your session section is named `[Xorg]`.
+
+These settings are described in the upstream [xrdp configuration manual](https://github.com/neutrinolabs/xrdp/blob/devel/docs/man/xrdp.ini.5.in).
 
 ## 📄 License
 

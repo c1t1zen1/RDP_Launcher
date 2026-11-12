@@ -20,11 +20,16 @@ an xrdp server where noted.
 - [ ] Minus and the red close button hide the launcher; clicking the menu-bar icon or the Dock icon brings it back.
 - [ ] Right-clicking the menu-bar icon gives Open / About / Quit; About shows the manual.
 - [ ] **Keychain Access** shows an "RDP Launcher" item for each connection with a saved password.
+- [ ] Save a password containing spaces and non-ASCII characters; reconnect after quitting/relaunching and confirm it is reused.
+- [ ] Connect without a saved password, tick **Remember in Keychain**, then reconnect and confirm the launcher does not ask again.
+- [ ] Deny Keychain access: the app reports that it cannot read/save the password instead of silently treating it as missing or saved.
 
 ## Sessions (Windows server; xrdp too)
 - [ ] First connect shows the certificate fingerprint; **Trust and Connect** connects and the button turns green.
 - [ ] Reconnecting doesn't ask again. A server with a changed certificate shows the **identity changed** warning.
 - [ ] Wrong password → "Couldn't sign in…" with Reconnect / Edit Connection / Close.
+- [ ] On TLS-enabled xrdp, saved username/password log in without retyping them at the xrdp login screen (subject to the server's authentication/session policy).
+- [ ] On an xrdp server with `security_layer=rdp`, the error explains the TLS requirement and xrdp configuration fix. After enabling TLS with a readable certificate/key and restarting xrdp, the connection works.
 - [ ] Unreachable host → "Can't reach…".
 - [ ] Clicking a green button brings its window to the front (no second session).
 - [ ] **Full screen** opens in its own Space on the chosen display; three-finger swipe moves between two servers.

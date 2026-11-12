@@ -73,6 +73,7 @@ pub enum PointerUpdate {
 pub enum FailureKind {
     BadCredentials,
     Unreachable,
+    UnsupportedSecurity,
     Other,
 }
 
@@ -271,6 +272,17 @@ fn shared_folder(req: &SessionRequest) -> Option<PathBuf> {
 }
 
 pub fn classify_failure(err: &ConnectorError) -> FailureKind {
+    match err.kind() {
+        ConnectorErrorKind::Negotiation(failure)
+            if failure.code() == ironrdp_pdu::nego::FailureCode::SSL_NOT_ALLOWED_BY_SERVER =>
+        {
+            return FailureKind::UnsupportedSecurity;
+        }
+        ConnectorErrorKind::Reason(reason) if reason.contains("server selected STANDARD_RDP_SECURITY") => {
+            return FailureKind::UnsupportedSecurity;
+        }
+        _ => {}
+    }
     if matches!(err.kind(), ConnectorErrorKind::Credssp(_) | ConnectorErrorKind::AccessDenied) {
         return FailureKind::BadCredentials;
     }
@@ -305,6 +317,9 @@ fn build_config(req: &SessionRequest, presented: &Arc<Mutex<Option<String>>>) ->
         .with_destination(Destination::from_parts(req.host.clone(), req.port))
         .with_username(req.username.clone())
         .with_password(req.password.clone())
+        // TLS-only servers such as xrdp need INFO_AUTOLOGON to use the supplied
+        // credentials rather than displaying their own login form.
+        .with_autologon(!req.username.is_empty() && !req.password.is_empty())
         .with_client_build(CLIENT_BUILD)
         .with_client_dir("C:\\Windows\\System32\\mstscax.dll")
         .with_platform(MajorPlatformType::MACINTOSH)
@@ -394,6 +409,13 @@ fn display_control_layout(layout: &[RemoteMonitor]) -> anyhow::Result<DisplayCon
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironrdp_connector::{ClientConnector, ClientConnectorState, Sequence};
+    use ironrdp_core::{decode, encode_vec, WriteBuf};
+    use ironrdp_pdu::mcs::SendDataRequest;
+    use ironrdp_pdu::nego::{ConnectionConfirm, FailureCode, ResponseFlags, SecurityProtocol};
+    use ironrdp_pdu::rdp::client_info::{ClientInfo, ClientInfoFlags};
+    use ironrdp_pdu::rdp::ClientInfoPdu;
+    use ironrdp_pdu::x224::X224;
 
     fn request() -> SessionRequest {
         SessionRequest {
@@ -417,5 +439,58 @@ mod tests {
     fn bulk_compression_is_not_offered() {
         let config = build_config(&request(), &Arc::new(Mutex::new(None))).unwrap();
         assert_eq!(config.connector().compression_type, None);
+    }
+
+    /// Decode the actual secure-settings packet, as a TLS-only server would.
+    fn client_info(req: &SessionRequest) -> ClientInfo {
+        let config = build_config(req, &Arc::new(Mutex::new(None))).unwrap();
+        let mut connector = ClientConnector::new(config.connector().clone(), "127.0.0.1:12345".parse().unwrap());
+        connector.state = ClientConnectorState::SecureSettingsExchange { io_channel_id: 1003, user_channel_id: 1002 };
+        let mut out = WriteBuf::new();
+        connector.step_no_input(&mut out).unwrap();
+        let packet = decode::<X224<SendDataRequest<'_>>>(out.filled()).unwrap();
+        decode::<ClientInfoPdu>(packet.0.user_data.as_ref()).unwrap().client_info
+    }
+
+    #[test]
+    fn supplied_credentials_request_auto_login_on_the_wire() {
+        let mut req = request();
+        req.password = " p@ss wörd 🔑 ".into();
+        req.domain = Some("CORP".into());
+        let info = client_info(&req);
+        assert!(info.flags.contains(ClientInfoFlags::AUTOLOGON));
+        assert_eq!(info.credentials.username, req.username);
+        assert_eq!(info.credentials.password, req.password);
+        assert_eq!(info.credentials.domain, req.domain);
+    }
+
+    #[test]
+    fn missing_credentials_leave_auto_login_disabled() {
+        let mut req = request();
+        assert!(!client_info(&req).flags.contains(ClientInfoFlags::AUTOLOGON));
+        req.username.clear();
+        req.password = "password".into();
+        assert!(!client_info(&req).flags.contains(ClientInfoFlags::AUTOLOGON));
+    }
+
+    #[test]
+    fn legacy_security_responses_are_classified_before_credentials_are_sent() {
+        let responses = [
+            ConnectionConfirm::Response { flags: ResponseFlags::empty(), protocol: SecurityProtocol::empty() },
+            ConnectionConfirm::Failure { code: FailureCode::SSL_NOT_ALLOWED_BY_SERVER },
+        ];
+        for response in responses {
+            let config = build_config(&request(), &Arc::new(Mutex::new(None))).unwrap();
+            assert!(config.connector().enable_tls && config.connector().enable_credssp);
+            assert!(!config.connector().enable_standard_rdp_security);
+            let mut connector = ClientConnector::new(config.connector().clone(), "127.0.0.1:12345".parse().unwrap());
+            let mut out = WriteBuf::new();
+            connector.step_no_input(&mut out).unwrap();
+            out.clear();
+            let response = encode_vec(&X224(response)).unwrap();
+            let error = connector.step(&response, None, &mut out).unwrap_err();
+            assert_eq!(classify_failure(&error), FailureKind::UnsupportedSecurity);
+            assert!(out.filled().is_empty());
+        }
     }
 }

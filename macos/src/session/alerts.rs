@@ -46,6 +46,7 @@ pub fn failure_title(kind: FailureKind, conn_name: &str) -> String {
     match kind {
         FailureKind::BadCredentials => format!("Couldn't sign in to {conn_name}"),
         FailureKind::Unreachable => format!("Can't reach {conn_name}"),
+        FailureKind::UnsupportedSecurity => format!("{conn_name} requires legacy RDP security"),
         FailureKind::Other => format!("Connection to {conn_name} failed"),
     }
 }
@@ -72,17 +73,27 @@ pub enum FailureChoice {
     Close,
 }
 
-pub fn connection_failed(mtm: MainThreadMarker, conn_name: &str, kind: FailureKind, message: &str) -> FailureChoice {
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str(&failure_title(kind, conn_name)));
-    let hint = match kind {
+pub fn failure_hint(kind: FailureKind) -> &'static str {
+    match kind {
         FailureKind::BadCredentials => "Check the username and password, or whether this account may use Remote Desktop.",
         FailureKind::Unreachable => {
             "Check the host name and that Remote Desktop is on and reachable from this Mac (same network or VPN). \
              Also check System Settings > Privacy & Security > Local Network."
         }
+        FailureKind::UnsupportedSecurity => {
+            "This server selected Standard RDP Security. The built-in client requires TLS or NLA.\n\n\
+             For Linux/xrdp: set security_layer=tls in the [Globals] section of /etc/xrdp/xrdp.ini, \
+             ensure xrdp can read its TLS certificate and private key, then restart the xrdp service.\n\n\
+             For Windows: enable TLS or Network Level Authentication on the Remote Desktop server."
+        }
         FailureKind::Other => "",
-    };
+    }
+}
+
+pub fn connection_failed(mtm: MainThreadMarker, conn_name: &str, kind: FailureKind, message: &str) -> FailureChoice {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(&failure_title(kind, conn_name)));
+    let hint = failure_hint(kind);
     alert.setInformativeText(&NSString::from_str(format!("{hint}\n\n{message}").trim()));
     alert.setAlertStyle(NSAlertStyle::Warning);
     for b in ["Reconnect", "Edit Connection", "Close"] {
@@ -127,6 +138,15 @@ mod tests {
     fn failure_titles_by_kind() {
         assert_eq!(failure_title(FailureKind::BadCredentials, "Pi5"), "Couldn't sign in to Pi5");
         assert_eq!(failure_title(FailureKind::Unreachable, "Pi5"), "Can't reach Pi5");
+        assert_eq!(failure_title(FailureKind::UnsupportedSecurity, "Pi5"), "Pi5 requires legacy RDP security");
         assert_eq!(failure_title(FailureKind::Other, "Pi5"), "Connection to Pi5 failed");
+    }
+
+    #[test]
+    fn legacy_security_hint_explains_the_xrdp_fix() {
+        let hint = failure_hint(FailureKind::UnsupportedSecurity);
+        assert!(hint.contains("/etc/xrdp/xrdp.ini"));
+        assert!(hint.contains("security_layer=tls"));
+        assert!(hint.contains("certificate and private key"));
     }
 }
