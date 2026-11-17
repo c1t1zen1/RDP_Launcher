@@ -285,7 +285,7 @@ impl Attempt {
         } else {
             None
         };
-        let config = build_config(req, presented, proxy.as_ref())?;
+        let config = build_config(req, presented, proxy.as_ref(), clipboard.is_some())?;
         let (output_tx, output) = output_channel(OUTPUT_QUEUE);
         let mut client = RdpClient::new(config, output_tx).with_desktop_updates();
         if let Some(clipboard) = clipboard {
@@ -446,10 +446,13 @@ pub fn classify_failure(err: &ConnectorError) -> FailureKind {
     FailureKind::Other
 }
 
+/// `clipboard`: whether a clipboard backend comes with the client (`start_session` takes it
+/// out of `req`, so `req.clipboard` is always `None` here).
 fn build_config(
     req: &SessionRequest,
     presented: &Arc<Mutex<Option<String>>>,
     proxy: Option<&legacy::Proxy>,
+    clipboard: bool,
 ) -> anyhow::Result<ironrdp_client::config::Config> {
     let (_, _, width, height) = virtual_desktop(&req.layout);
     let slot = Arc::clone(presented);
@@ -487,7 +490,7 @@ fn build_config(
         .with_pointer_software_rendering(false)
         .with_sound(req.sound)
         .with_audio_capture(false)
-        .with_clipboard(if req.clipboard.is_some() { ClipboardType::Enable } else { ClipboardType::Disable })
+        .with_clipboard(if clipboard { ClipboardType::Enable } else { ClipboardType::Disable })
         // Our own RDPDR channel (see `drive::channel`) replaces the client's built-in one.
         .with_rdpdr(false)
         .with_printers(false)
@@ -589,13 +592,13 @@ mod tests {
     /// IronRDP's reactivation step can't decompress ("unexpected server message").
     #[test]
     fn bulk_compression_is_not_offered() {
-        let config = build_config(&request(), &Arc::new(Mutex::new(None)), None).unwrap();
+        let config = build_config(&request(), &Arc::new(Mutex::new(None)), None, false).unwrap();
         assert_eq!(config.connector().compression_type, None);
     }
 
     /// Decode the actual secure-settings packet, as a TLS-only server would.
     fn client_info(req: &SessionRequest) -> ClientInfo {
-        let config = build_config(req, &Arc::new(Mutex::new(None)), None).unwrap();
+        let config = build_config(req, &Arc::new(Mutex::new(None)), None, false).unwrap();
         let mut connector = ClientConnector::new(config.connector().clone(), "127.0.0.1:12345".parse().unwrap());
         connector.state = ClientConnectorState::SecureSettingsExchange { io_channel_id: 1003, user_channel_id: 1002 };
         let mut out = WriteBuf::new();
@@ -632,7 +635,7 @@ mod tests {
             ConnectionConfirm::Failure { code: FailureCode::SSL_NOT_ALLOWED_BY_SERVER },
         ];
         for response in responses {
-            let config = build_config(&request(), &Arc::new(Mutex::new(None)), None).unwrap();
+            let config = build_config(&request(), &Arc::new(Mutex::new(None)), None, false).unwrap();
             assert!(config.connector().enable_tls && config.connector().enable_credssp);
             assert!(!config.connector().enable_standard_rdp_security);
             let mut connector = ClientConnector::new(config.connector().clone(), "127.0.0.1:12345".parse().unwrap());

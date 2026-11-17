@@ -7,13 +7,20 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend, CliprdrBackendFactory};
+use ironrdp_cliprdr::pdu::{
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
+    FormatDataRequest, FormatDataResponse, LockDataId,
+};
+use ironrdp_core::IntoOwned;
 use ironrdp_input::{Operation, Scancode};
 use ironrdp_server::{
-    BitmapUpdate, Credentials, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat,
-    RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult,
-    TlsIdentityCtx,
+    BitmapUpdate, CliprdrServerFactory, Credentials, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent,
+    MouseEvent, PixelFormat, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent,
+    ServerResult, TlsIdentityCtx,
 };
 use rdp_launcher::certs;
+use rdp_launcher::session::clipboard_codec::{decode_unicode_text, encode_unicode_text};
 use rdp_launcher::monitors::RemoteMonitor;
 use rdp_launcher::session::engine::{start_session, FailureKind, SessionEvent, SessionHandle, SessionRequest};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -35,6 +42,8 @@ const USER: &str = "user";
 const PASSWORD: &str = "password";
 const SIZE: u16 = 64;
 const RED: u32 = 0x00FF_0000;
+const SERVER_TEXT: &str = "copied on the server";
+const CLIENT_TEXT: &str = "copied on the Mac";
 
 // ---------- test server ----------
 
@@ -119,11 +128,118 @@ impl RdpdrServerFactory for DriveRecorderFactory {
     }
 }
 
+fn unicode_text() -> Vec<ClipboardFormat> {
+    vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)]
+}
+
+/// Server-side CLIPRDR: offers `SERVER_TEXT` once ready, pastes whatever the client offers
+/// and records it.
+#[derive(Debug)]
+struct ServerClip {
+    events: Option<UnboundedSender<ServerEvent>>,
+    pasted: UnboundedSender<String>,
+}
+
+impl_as_any!(ServerClip);
+
+impl ServerClip {
+    fn send(&self, message: ClipboardMessage) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(ServerEvent::Clipboard(message));
+        }
+    }
+}
+
+impl CliprdrBackend for ServerClip {
+    fn temporary_directory(&self) -> &str { ".cliprdr" }
+    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags { ClipboardGeneralCapabilityFlags::empty() }
+    fn on_ready(&mut self) {
+        self.send(ClipboardMessage::SendInitiateCopy(unicode_text()));
+    }
+    fn on_request_format_list(&mut self) {}
+    fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, formats: &[ClipboardFormat]) {
+        if formats.iter().any(|f| f.id() == ClipboardFormatId::CF_UNICODETEXT) {
+            self.send(ClipboardMessage::SendInitiatePaste(ClipboardFormatId::CF_UNICODETEXT));
+        }
+    }
+    fn on_format_data_request(&mut self, _: FormatDataRequest) {
+        let data = FormatDataResponse::new_data(encode_unicode_text(SERVER_TEXT)).into_owned();
+        self.send(ClipboardMessage::SendFormatData(data));
+    }
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
+        let _ = self.pasted.send(decode_unicode_text(response.data()));
+    }
+    fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: LockDataId) {}
+    fn on_unlock(&mut self, _: LockDataId) {}
+}
+
+struct ServerClipFactory {
+    events: Option<UnboundedSender<ServerEvent>>,
+    pasted: UnboundedSender<String>,
+}
+
+impl ServerEventSender for ServerClipFactory {
+    fn set_sender(&mut self, sender: UnboundedSender<ServerEvent>) {
+        self.events = Some(sender);
+    }
+}
+
+impl CliprdrBackendFactory for ServerClipFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
+        Box::new(ServerClip { events: self.events.clone(), pasted: self.pasted.clone() })
+    }
+}
+
+impl CliprdrServerFactory for ServerClipFactory {}
+
+/// Client-side CLIPRDR standing in for the Mac pasteboard: records what the server asks of it.
+#[derive(Debug)]
+struct ClientClip(UnboundedSender<String>);
+
+impl_as_any!(ClientClip);
+
+impl CliprdrBackend for ClientClip {
+    fn temporary_directory(&self) -> &str { ".cliprdr" }
+    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags { ClipboardGeneralCapabilityFlags::empty() }
+    fn on_ready(&mut self) {}
+    fn on_request_format_list(&mut self) {
+        let _ = self.0.send("format list requested".into());
+    }
+    fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, formats: &[ClipboardFormat]) {
+        if formats.iter().any(|f| f.id() == ClipboardFormatId::CF_UNICODETEXT) {
+            let _ = self.0.send("text offered".into());
+        }
+    }
+    fn on_format_data_request(&mut self, _: FormatDataRequest) {
+        let _ = self.0.send("text requested".into());
+    }
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
+        let _ = self.0.send(format!("pasted {:?}", decode_unicode_text(response.data())));
+    }
+    fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: LockDataId) {}
+    fn on_unlock(&mut self, _: LockDataId) {}
+}
+
+struct ClientClipFactory(UnboundedSender<String>);
+
+impl CliprdrBackendFactory for ClientClipFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
+        Box::new(ClientClip(self.0.clone()))
+    }
+}
+
 struct TestServer {
     addr: SocketAddr,
     cert_der: Vec<u8>,
     keys: UnboundedReceiver<KeyboardEvent>,
     drives: UnboundedReceiver<String>,
+    pasted: UnboundedReceiver<String>,
     display_tx: Option<UnboundedSender<DisplayUpdate>>,
 }
 
@@ -163,12 +279,14 @@ async fn spawn_server() -> TestServer {
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let (keys_tx, keys) = mpsc::unbounded_channel();
     let (drives_tx, drives) = mpsc::unbounded_channel();
+    let (pasted_tx, pasted) = mpsc::unbounded_channel();
     let mut server = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_hybrid(acceptor, identity.pub_key)
         .with_input_handler(Input(keys_tx))
         .with_display_handler(Display { rx: Arc::new(Mutex::new(display_rx)) })
         .with_rdpdr_factory(Some(Box::new(DriveRecorderFactory(drives_tx))))
+        .with_cliprdr_factory(Some(Box::new(ServerClipFactory { events: None, pasted: pasted_tx })))
         .build();
     server.set_credentials(Some(Credentials { username: USER.into(), password: PASSWORD.into(), domain: None }));
     let events = server.event_sender().clone();
@@ -178,7 +296,7 @@ async fn spawn_server() -> TestServer {
     let (tx, rx) = oneshot::channel();
     events.send(ServerEvent::GetLocalAddr(tx)).unwrap();
     let addr = rx.await.unwrap().expect("server is listening");
-    TestServer { addr, cert_der, keys, drives, display_tx: Some(display_tx) }
+    TestServer { addr, cert_der, keys, drives, pasted, display_tx: Some(display_tx) }
 }
 
 // ---------- client helpers ----------
@@ -231,6 +349,10 @@ async fn wait_for(rx: &mut UnboundedReceiver<SessionEvent>, wanted: fn(&SessionE
 
 async fn next_key(keys: &mut UnboundedReceiver<KeyboardEvent>) -> KeyboardEvent {
     tokio::time::timeout(Duration::from_secs(10), keys.recv()).await.expect("key within 10 s").expect("server alive")
+}
+
+async fn next_text(rx: &mut UnboundedReceiver<String>) -> String {
+    tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("clipboard event within 10 s").expect("sender alive")
 }
 
 /// Runs `body` inside a `LocalSet` on the multi-thread test runtime.
@@ -412,6 +534,36 @@ async fn no_shared_folder_means_no_drive_channel() {
         let (_handle, mut rx) = start(request(server.addr.port(), PASSWORD, Some(fp)));
         wait_for(&mut rx, |e| matches!(e, SessionEvent::Connected)).await;
         assert!(tokio::time::timeout(Duration::from_secs(2), server.drives.recv()).await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clipboard_text_crosses_both_ways() {
+    local(async {
+        let mut server = spawn_server().await;
+        let fp = certs::fingerprint(&server.cert_der);
+        let (clip_tx, mut clip) = mpsc::unbounded_channel();
+        let mut req = request(server.addr.port(), PASSWORD, Some(fp));
+        req.clipboard = Some(Box::new(ClientClipFactory(clip_tx)));
+        let (handle, mut rx) = start(req);
+        wait_for(&mut rx, |e| matches!(e, SessionEvent::Connected)).await;
+
+        // The channel comes up once the client answers with its (empty) format list.
+        assert_eq!(next_text(&mut clip).await, "format list requested");
+        handle.send_clipboard(ClipboardMessage::SendInitiateCopy(Vec::new()));
+
+        // Server → client.
+        assert_eq!(next_text(&mut clip).await, "text offered");
+        handle.send_clipboard(ClipboardMessage::SendInitiatePaste(ClipboardFormatId::CF_UNICODETEXT));
+        assert_eq!(next_text(&mut clip).await, format!("pasted {SERVER_TEXT:?}"));
+
+        // Client → server.
+        handle.send_clipboard(ClipboardMessage::SendInitiateCopy(unicode_text()));
+        assert_eq!(next_text(&mut clip).await, "text requested");
+        let data = FormatDataResponse::new_data(encode_unicode_text(CLIENT_TEXT)).into_owned();
+        handle.send_clipboard(ClipboardMessage::SendFormatData(data));
+        assert_eq!(next_text(&mut server.pasted).await, CLIENT_TEXT);
     })
     .await;
 }

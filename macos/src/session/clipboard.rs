@@ -54,10 +54,18 @@ impl Shared {
         }
     }
 
-    fn announce_local_text(&self) {
+    fn local_formats(&self) -> Vec<ClipboardFormat> {
         if self.local_text.lock().expect("clipboard text").is_some() {
-            let format = ClipboardFormat::new(ClipboardFormatId::new(CF_UNICODETEXT));
-            self.send(ClipboardMessage::SendInitiateCopy(vec![format]));
+            vec![ClipboardFormat::new(ClipboardFormatId::new(CF_UNICODETEXT))]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn announce_local_text(&self) {
+        let formats = self.local_formats();
+        if !formats.is_empty() {
+            self.send(ClipboardMessage::SendInitiateCopy(formats));
         }
     }
 }
@@ -84,7 +92,8 @@ impl CliprdrBackend for MacClipboardBackend {
     }
 
     fn on_request_format_list(&mut self) {
-        self.shared.announce_local_text();
+        // Answer even without text: the channel only comes up once we do.
+        self.shared.send(ClipboardMessage::SendInitiateCopy(self.shared.local_formats()));
     }
 
     fn on_process_negotiated_capabilities(&mut self, _capabilities: ClipboardGeneralCapabilityFlags) {}
@@ -275,6 +284,16 @@ mod tests {
         let sink_log = Arc::clone(&log);
         shared.set_sink(Some(Box::new(move |m| sink_log.lock().unwrap().push(format!("{m:?}")))));
         (shared, log)
+    }
+
+    /// The channel only comes up once the client answers with a format list, so a Mac
+    /// clipboard without text (an image, or nothing) must still be answered.
+    #[test]
+    fn format_list_request_is_answered_without_text() {
+        let (shared, log) = recording();
+        let mut backend = MacClipboardBackend { shared };
+        backend.on_request_format_list();
+        assert_eq!(*log.lock().unwrap(), ["SendInitiateCopy([])"]);
     }
 
     #[test]
