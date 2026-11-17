@@ -7,7 +7,7 @@
 *by [c1t1zen](https://github.com/c1t1zen1)*
 
 ![macOS](https://img.shields.io/badge/platform-macOS%2013%2B%20·%20Apple%20Silicon-000000?logo=apple&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.0.0%20·%20testing-orange)
+![Version](https://img.shields.io/badge/version-1.1.0%20·%20testing-orange)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-DEA584?logo=rust&logoColor=black)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -15,9 +15,9 @@
 
 ---
 
-> **⚠️ First release — testing phase.** v1.0.0 is the first version of RDP Launcher for Mac
-> and is still being tested. Expect some rough edges, and please
-> [open an issue](https://github.com/c1t1zen1/RDP_Launcher/issues) if something doesn't work.
+> **⚠️ Testing phase.** RDP Launcher for Mac (v1.1.0) is still being tested. Expect some
+> rough edges, and please [open an issue](https://github.com/c1t1zen1/RDP_Launcher/issues)
+> if something doesn't work.
 
 The macOS edition of [RDP Launcher](../README.md). Same launcher as on Windows — big
 buttons, green while connected, drag to reorder — but macOS has no built-in Remote
@@ -43,7 +43,8 @@ Desktop client, so this one carries its own, built on the pure-Rust
   Windows key; ⌥ is Alt. ⌘Tab, ⌘Space, ⌃⌘F and ⌘Q stay with the Mac.
 - **Launcher parity with Windows** — ✏️ 📋 🗑 on every button, right-click menu, animated drag
   to reorder, always-on-top pin, About/manual, tooltips, and a menu-bar icon.
-- Works with **Windows** (Network Level Authentication) and **Linux/xrdp** servers with TLS enabled.
+- Works with **Windows** (Network Level Authentication) and **Linux/xrdp** servers, including
+  xrdp servers that only offer legacy Standard RDP Security (see [below](#xrdp-selects-standard-rdp-security)).
 
 ## 🔐 Storage & security
 
@@ -60,8 +61,8 @@ A Windows `connections.json` can be copied over and loads as-is (passwords must 
 
 ## 📦 Install
 
-1. Download `RDP-Launcher-1.0.0.dmg` from the
-   [macOS v1.0.0 release](https://github.com/c1t1zen1/RDP_Launcher/releases/tag/macos-v1.0.0)
+1. Download `RDP-Launcher-1.1.0.dmg` from the
+   [macOS v1.1.0 release](https://github.com/c1t1zen1/RDP_Launcher/releases/tag/macos-v1.1.0)
    (or build it yourself, below).
 2. Open the `.dmg` and drag **RDP Launcher** into **Applications**.
 3. Start it from Launchpad or Spotlight.
@@ -89,7 +90,7 @@ Output:
 
 ```
 macos/dist/RDP Launcher.app
-macos/dist/RDP-Launcher-1.0.0.dmg
+macos/dist/RDP-Launcher-1.1.0.dmg
 ```
 
 `./scripts/make-icon.sh` regenerates `resources/AppIcon.icns` from `../assets/app.ico`.

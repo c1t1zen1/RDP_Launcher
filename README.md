@@ -7,14 +7,14 @@
 *by [c1t1zen](https://github.com/c1t1zen1)*
 
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)
-![macOS](https://img.shields.io/badge/macOS%20v1.0.0-testing-orange?logo=apple&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS%20v1.1.0-testing-orange?logo=apple&logoColor=white)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-DEA584?logo=rust&logoColor=black)
 ![Size](https://img.shields.io/badge/exe%20size-~400%20KB-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 <img src="assets/screenshot.png" width="340" alt="RDP Launcher screenshot">
 
-🍎 **New: RDP Launcher for Mac** — first release (v1.0.0), still in testing. [Details below ↓](#-macos-edition)
+🍎 **New: RDP Launcher for Mac v1.1.0** — still in testing. [Details below ↓](#-macos-edition)
 
 </div>
 
@@ -99,9 +99,9 @@ RDP_Launcher/
 
 ## 🍎 macOS edition
 
-> **⚠️ First release — testing phase.** macOS **v1.0.0** is the first version of RDP Launcher
-> for Mac and is still being tested. Expect some rough edges, and please
-> [open an issue](https://github.com/c1t1zen1/RDP_Launcher/issues) if something doesn't work.
+> **⚠️ Testing phase.** RDP Launcher for Mac (**v1.1.0**) is still being tested. Expect some
+> rough edges, and please [open an issue](https://github.com/c1t1zen1/RDP_Launcher/issues)
+> if something doesn't work.
 > The Windows app is unaffected.
 
 The Mac version is the same launcher — big buttons, green while connected, drag to
@@ -115,7 +115,7 @@ the pure-Rust [IronRDP](https://github.com/Devolutions/IronRDP) library. Nothing
 - **Clipboard, sound and a shared folder** — copy & paste text both ways, hear remote audio, and
   share a Mac folder that shows up on the remote PC.
 - **Mac-friendly keyboard** — ⌘C/⌘V/⌘Z act as Ctrl+C/V/Z remotely; tap ⌘ alone for the Windows key.
-- **Works with Windows (NLA) and Linux/xrdp servers.**
+- **Works with Windows (NLA) and Linux/xrdp servers**, including xrdp servers that only offer legacy Standard RDP Security.
 
 | | Windows | macOS |
 |---|---|---|
@@ -126,8 +126,8 @@ the pure-Rust [IronRDP](https://github.com/Devolutions/IronRDP) library. Nothing
 | Server identity | handled by `mstsc` | trust-on-first-use certificate fingerprint |
 | Connection list | `%APPDATA%\RdpLauncher\connections.json` | `~/Library/Application Support/RdpLauncher/connections.json` (same format) |
 
-**Download:** `RDP-Launcher-1.0.0.dmg` from the
-[macOS v1.0.0 release](https://github.com/c1t1zen1/RDP_Launcher/releases/tag/macos-v1.0.0) (pre-release).
+**Download:** `RDP-Launcher-1.1.0.dmg` from the
+[macOS v1.1.0 release](https://github.com/c1t1zen1/RDP_Launcher/releases/tag/macos-v1.1.0) (pre-release).
 Open it, drag **RDP Launcher** into **Applications**, and click **Allow** when macOS asks for
 Local Network access on your first connection.
 
@@ -140,7 +140,7 @@ The app isn't notarized by Apple, so the first launch of a downloaded copy is bl
 ```bash
 git clone https://github.com/c1t1zen1/RDP_Launcher.git
 cd RDP_Launcher/macos
-./scripts/build-app.sh        # → macos/dist/RDP-Launcher-1.0.0.dmg
+./scripts/build-app.sh        # → macos/dist/RDP-Launcher-1.1.0.dmg
 ```
 
 Linux/xrdp servers work with TLS or with legacy Standard RDP Security (`security_layer=rdp`);
@@ -150,10 +150,11 @@ Full Mac docs: [macos/README.md](macos/README.md) · manual test checklist: [mac
 
 ## 📋 Changelog
 
-### macOS — unreleased fixes
-- Request RDP auto-login when a username and password are supplied, including on TLS-only xrdp servers.
-- Report Keychain access and password-saving errors instead of silently losing saved credentials.
+### macOS v1.1.0 (testing phase)
 - Connect to servers that only offer legacy Standard RDP Security (e.g. xrdp with `security_layer=rdp`), using RC4 encryption through a built-in loopback proxy, with the server's key trusted on first use.
+- Request RDP auto-login when a username and password are supplied, including on TLS-only xrdp servers.
+- Text copied on the remote now reaches the Mac even if the Mac clipboard held no text (e.g. an image) when the session started.
+- Report Keychain access and password-saving errors instead of silently losing saved credentials.
 
 ### macOS v1.0.0 — first release (testing phase)
 - First version of RDP Launcher for Mac, with a built-in RDP client.
