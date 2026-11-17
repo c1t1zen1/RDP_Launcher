@@ -46,7 +46,7 @@ pub fn failure_title(kind: FailureKind, conn_name: &str) -> String {
     match kind {
         FailureKind::BadCredentials => format!("Couldn't sign in to {conn_name}"),
         FailureKind::Unreachable => format!("Can't reach {conn_name}"),
-        FailureKind::UnsupportedSecurity => format!("{conn_name} requires legacy RDP security"),
+        FailureKind::UnsupportedSecurity => format!("{conn_name} uses unsupported RDP security"),
         FailureKind::Other => format!("Connection to {conn_name} failed"),
     }
 }
@@ -81,9 +81,11 @@ pub fn failure_hint(kind: FailureKind) -> &'static str {
              Also check System Settings > Privacy & Security > Local Network."
         }
         FailureKind::UnsupportedSecurity => {
-            "This server selected Standard RDP Security. The built-in client requires TLS or NLA.\n\n\
-             For Linux/xrdp: set security_layer=tls in the [Globals] section of /etc/xrdp/xrdp.ini, \
-             ensure xrdp can read its TLS certificate and private key, then restart the xrdp service.\n\n\
+            "The built-in client supports TLS, NLA and Standard RDP Security with RC4 encryption, \
+             but not FIPS-only or unencrypted connections.\n\n\
+             For Linux/xrdp: in the [Globals] section of /etc/xrdp/xrdp.ini, set security_layer=tls \
+             (xrdp must be able to read its TLS certificate and private key) or crypt_level=high, \
+             then restart the xrdp service.\n\n\
              For Windows: enable TLS or Network Level Authentication on the Remote Desktop server."
         }
         FailureKind::Other => "",
@@ -138,15 +140,16 @@ mod tests {
     fn failure_titles_by_kind() {
         assert_eq!(failure_title(FailureKind::BadCredentials, "Pi5"), "Couldn't sign in to Pi5");
         assert_eq!(failure_title(FailureKind::Unreachable, "Pi5"), "Can't reach Pi5");
-        assert_eq!(failure_title(FailureKind::UnsupportedSecurity, "Pi5"), "Pi5 requires legacy RDP security");
+        assert_eq!(failure_title(FailureKind::UnsupportedSecurity, "Pi5"), "Pi5 uses unsupported RDP security");
         assert_eq!(failure_title(FailureKind::Other, "Pi5"), "Connection to Pi5 failed");
     }
 
     #[test]
-    fn legacy_security_hint_explains_the_xrdp_fix() {
+    fn unsupported_security_hint_explains_the_xrdp_fix() {
         let hint = failure_hint(FailureKind::UnsupportedSecurity);
         assert!(hint.contains("/etc/xrdp/xrdp.ini"));
         assert!(hint.contains("security_layer=tls"));
         assert!(hint.contains("certificate and private key"));
+        assert!(hint.contains("crypt_level=high"));
     }
 }

@@ -123,10 +123,16 @@ user account can read. Passwords never appear in the log."
       access fails, unlock the login Keychain and allow RDP Launcher access.
       Saved username/password request auto-login; server policy may still
       require an interactive login.
-  'Requires legacy RDP security' / STANDARD_RDP_SECURITY
-      The built-in client requires TLS or NLA. On Linux/xrdp, set
-      security_layer=tls under [Globals] in /etc/xrdp/xrdp.ini. Ensure xrdp
-      can read its TLS certificate/private key, then restart xrdp.
+  Servers with legacy Standard RDP Security (xrdp security_layer=rdp)
+      These connect automatically with RC4 encryption; the first connection
+      asks you to trust the server's key, like a certificate. TLS is
+      stronger: on Linux/xrdp set security_layer=tls under [Globals] in
+      /etc/xrdp/xrdp.ini, make sure xrdp can read its certificate/private
+      key, then restart xrdp.
+  'Uses unsupported RDP security'
+      The server requires FIPS encryption or no encryption at all, which
+      the built-in client refuses. Enable TLS as above, or set
+      crypt_level=high in /etc/xrdp/xrdp.ini.
   'Identity changed' warning
       The server's certificate differs from the one you trusted. That is
       expected after reinstalling the server; otherwise do not connect.

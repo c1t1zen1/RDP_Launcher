@@ -122,17 +122,23 @@ clipboard activity.
 | "Couldn't sign in …" | Re-enter username / password; use `DOMAIN\user` for domain accounts |
 | Password is requested every time by the launcher | Tick **Remember in Keychain**, or save it in Edit Connection. If Keychain access fails, unlock the login Keychain and allow the app access; read/save failures now show an error |
 | "Identity changed" warning | Expected after a server reinstall; otherwise don't connect |
-| `server selected STANDARD_RDP_SECURITY` | Enable TLS on the server; see the xrdp setup below |
+| "… uses unsupported RDP security" | The server only offers FIPS or no encryption; enable TLS or set `crypt_level=high` (see below) |
 | xrdp shows a login screen | Save both username and password. If it still prompts, check xrdp authentication/session settings; `autorun` selects the session used for automatic login |
 | No sound | Check the connection's Sound option and the Mac's output device |
 
 ### xrdp selects Standard RDP Security
 
-The bundled IronRDP client supports TLS and NLA over TCP. It does not implement the
-RC4/FIPS security exchange needed by legacy encrypted Standard RDP Security. A server
-configured with `security_layer=rdp` therefore cannot connect to this client.
+Servers configured with `security_layer=rdp` (or `negotiate` without a readable TLS
+certificate) use legacy Standard RDP Security instead of TLS. IronRDP doesn't implement
+it, so the app connects to these servers through a small built-in loopback proxy that
+does the RSA key exchange and RC4 encryption (40/56/128-bit) itself. This is automatic:
+the first connection asks you to trust the server's key fingerprint, as with TLS
+certificates. Servers that require FIPS (`crypt_level=fips`) or no encryption
+(`crypt_level=none`) are refused.
 
-On the **Linux server**, edit the existing settings under `[Globals]` in
+RC4 is weak by today's standards, so prefer TLS on servers you control.
+
+To switch to TLS, on the **Linux server**, edit the existing settings under `[Globals]` in
 `/etc/xrdp/xrdp.ini`:
 
 ```ini

@@ -174,7 +174,7 @@ impl SessionManager {
             }),
         );
         // Attach right away so the server's first clipboard "ready" is answered.
-        clipboard.attach(handle.input_sender());
+        clipboard.attach(handle.clone());
         let title = format!("{} — {}", conn.name, conn.host);
         let windows = SessionWindows::open(self.mtm, &title, handle.clone(), conn.display, &displays, &layout);
         let closed_id = id.clone();

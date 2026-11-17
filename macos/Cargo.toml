@@ -32,8 +32,18 @@ ironrdp-rdpdr = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce
 ironrdp-rdpdr-native = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
 ironrdp-core = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
 ironrdp-graphics = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
+ironrdp-rdcleanpath = { git = "https://github.com/Devolutions/IronRDP", rev = "da016ce860040c6cb37943cfc857d836735d252c" }
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+
+# Standard RDP Security proxy (session::legacy, session::rdpsec).
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", features = ["sink"] }
+url = "2"
+md5 = { package = "md-5", version = "0.10" }
+sha1 = "0.10"
+num-bigint = "0.4"
+getrandom = "0.3"
 
 objc2 = "0.6"
 objc2-foundation = "0.3"

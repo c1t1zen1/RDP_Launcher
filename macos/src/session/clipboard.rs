@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 
-use ironrdp_client::rdp::RdpInputSender;
 use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
@@ -23,6 +22,7 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSString, NSTimer};
 
 use crate::app::on_main;
 use crate::session::clipboard_codec::{decode_unicode_text, encode_unicode_text, PasteboardWatcher, CF_UNICODETEXT};
+use crate::session::engine::SessionHandle;
 
 const POLL_SECS: f64 = 0.5;
 
@@ -139,12 +139,8 @@ pub struct ClipboardLink {
 
 impl ClipboardLink {
     /// Start delivering local copies to this session.
-    pub fn attach(self: &Rc<Self>, sender: RdpInputSender) {
-        self.shared.set_sink(Some(Box::new(move |message| {
-            if let Err(e) = sender.send_clipboard(message) {
-                tracing::debug!(error = %e, "clipboard message dropped");
-            }
-        })));
+    pub fn attach(self: &Rc<Self>, session: SessionHandle) {
+        self.shared.set_sink(Some(Box::new(move |message| session.send_clipboard(message))));
         HUB.with(|h| h.borrow_mut().links.push(Rc::downgrade(self)));
     }
 

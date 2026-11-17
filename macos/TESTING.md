@@ -29,7 +29,8 @@ an xrdp server where noted.
 - [ ] Reconnecting doesn't ask again. A server with a changed certificate shows the **identity changed** warning.
 - [ ] Wrong password → "Couldn't sign in…" with Reconnect / Edit Connection / Close.
 - [ ] On TLS-enabled xrdp, saved username/password log in without retyping them at the xrdp login screen (subject to the server's authentication/session policy).
-- [ ] On an xrdp server with `security_layer=rdp`, the error explains the TLS requirement and xrdp configuration fix. After enabling TLS with a readable certificate/key and restarting xrdp, the connection works.
+- [ ] On an xrdp server with `security_layer=rdp`, the first connect shows the server key fingerprint; **Trust and Connect** connects (RC4 Standard RDP Security). Also automated: `RDPL_LEGACY_HOST=<server> cargo test --test legacy_live -- --ignored`.
+- [ ] An xrdp server with `crypt_level=fips` or `crypt_level=none` shows "… uses unsupported RDP security" with the xrdp fix.
 - [ ] Unreachable host → "Can't reach…".
 - [ ] Clicking a green button brings its window to the front (no second session).
 - [ ] **Full screen** opens in its own Space on the chosen display; three-finger swipe moves between two servers.

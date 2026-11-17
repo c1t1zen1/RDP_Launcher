@@ -6,6 +6,8 @@ pub mod engine;
 pub mod framebuffer;
 pub mod geometry;
 pub mod keymap;
+pub mod legacy;
 pub mod manager;
+pub mod rdpsec;
 pub mod view;
 pub mod window;
